@@ -1,33 +1,30 @@
-"""MemoBot client SDK."""
-import requests
+"""MemoBot SDK - Memory layer for robots."""
+import json
+import asyncio
+import base64
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Callable
+import requests
 
 
 class MemoBotClient:
     """
-    Client for interacting with MemoBot API.
+    Client for interacting with MemoBot memory API.
     
     Example:
         client = MemoBotClient("http://localhost:8000", "your-api-key")
         
-        # Log an event
-        client.log_speech(
-            robot_id="robot-123",
-            text="I don't like loud noises.",
-            speaker="user",
-            user_id="user-456"
-        )
+        # Store memory
+        client.store(robot_id="robot-1", text="User said hello", type="USER_SAID")
         
-        # Query memory
-        answer = client.ask_memory(
-            robot_id="robot-123",
-            question="What does this user like?"
-        )
+        # Retrieve memory
+        context = client.retrieve_memory(robot_id="robot-1", query="What did the user say?")
+        print(context["clips"])   # Video clips
+        print(context["events"])  # Text events
+        print(context["objects"]) # Detected objects
     """
     
     def __init__(self, api_url: str, api_key: str):
-        """Initialize client."""
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
         self.session = requests.Session()
@@ -37,23 +34,35 @@ class MemoBotClient:
         })
     
     # ==========================================================================
-    # Event Logging
+    # Memory Storage
     # ==========================================================================
     
-    def log_event(
+    def store(
         self,
         robot_id: str,
-        source: str,
+        text: str,
         type: str,
-        text: Optional[str] = None,
+        source: str = "speech",
         user_id: Optional[str] = None,
         timestamp: Optional[datetime] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Log an event to memory."""
-        payload = {"robot_id": robot_id, "source": source, "type": type}
-        if text:
-            payload["text"] = text
+        """
+        Store a memory event.
+        
+        Args:
+            robot_id: Robot identifier
+            text: Event text content
+            type: Event type (USER_SAID, ROBOT_SAID, OBJECT_DETECTED, etc.)
+            source: Event source (speech, vision, action)
+            user_id: Optional user identifier
+            timestamp: Event timestamp (defaults to now)
+            metadata: Additional metadata
+        
+        Returns:
+            Created event details
+        """
+        payload = {"robot_id": robot_id, "text": text, "type": type, "source": source}
         if user_id:
             payload["user_id"] = user_id
         if timestamp:
@@ -65,64 +74,99 @@ class MemoBotClient:
         resp.raise_for_status()
         return resp.json()
     
-    def log_speech(
-        self,
-        robot_id: str,
-        text: str,
-        speaker: str,
-        user_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def log_speech(self, robot_id: str, text: str, speaker: str, user_id: str = None) -> Dict:
         """Log a speech event."""
-        return self.log_event(
+        return self.store(
             robot_id=robot_id,
-            source="speech",
-            type="USER_SAID" if speaker == "user" else "ROBOT_SAID",
             text=text,
+            type="USER_SAID" if speaker == "user" else "ROBOT_SAID",
+            source="speech",
             user_id=user_id
         )
     
-    def log_vision(
-        self,
-        robot_id: str,
-        description: str,
-        objects: Optional[List[str]] = None
-    ) -> Dict[str, Any]:
+    def log_vision(self, robot_id: str, description: str, objects: List[str] = None) -> Dict:
         """Log a vision event."""
-        return self.log_event(
+        return self.store(
             robot_id=robot_id,
-            source="vision",
-            type="OBJECT_DETECTED",
             text=description,
+            type="OBJECT_DETECTED",
+            source="vision",
             metadata={"objects": objects} if objects else None
         )
     
     # ==========================================================================
-    # Memory Queries
+    # Memory Retrieval
     # ==========================================================================
     
-    def search_memory(
+    def retrieve_memory(
         self,
         robot_id: str,
         query: str,
         user_id: Optional[str] = None,
-        limit: int = 10
+        time_from: Optional[datetime] = None,
+        time_to: Optional[datetime] = None,
+        limit: int = 10,
+        include_summary: bool = False
     ) -> Dict[str, Any]:
-        """Search memory for relevant events."""
-        payload = {"robot_id": robot_id, "query": query, "limit": limit}
+        """
+        Retrieve memories matching a query.
+        
+        Returns rich context with clips, events, and objects.
+        
+        Args:
+            robot_id: Robot identifier
+            query: Natural language query (e.g., "Where did I put my keys?")
+            user_id: Filter by user
+            time_from: Start of time range
+            time_to: End of time range
+            limit: Maximum results
+            include_summary: Include LLM-generated summary
+        
+        Returns:
+            {
+                "query": "...",
+                "context": {
+                    "clips": [...],    # Video clips with timestamp, description, confidence
+                    "events": [...],   # Text events with timestamp, type, text
+                    "objects": [...],  # Detected objects
+                    "summary": "..."   # Optional summary
+                }
+            }
+        """
+        payload = {
+            "robot_id": robot_id,
+            "query": query,
+            "limit": limit,
+            "include_summary": include_summary
+        }
         if user_id:
             payload["user_id"] = user_id
+        if time_from:
+            payload["time_from"] = time_from.isoformat()
+        if time_to:
+            payload["time_to"] = time_to.isoformat()
         
-        resp = self.session.post(f"{self.api_url}/v1/memory/search-events", json=payload)
+        resp = self.session.post(f"{self.api_url}/v1/memory/retrieve", json=payload)
         resp.raise_for_status()
         return resp.json()
     
-    def ask_memory(
+    def ask(
         self,
         robot_id: str,
         question: str,
         user_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Ask a question and get an LLM-generated answer."""
+        """
+        Ask a question and get an LLM-generated answer.
+        
+        Args:
+            robot_id: Robot identifier
+            question: Question to answer based on memories
+            user_id: Optional user context
+        
+        Returns:
+            {"answer": "...", "confidence": 0.9, "supporting_events": [...]}
+        """
         payload = {"robot_id": robot_id, "question": question}
         if user_id:
             payload["user_id"] = user_id
@@ -131,12 +175,7 @@ class MemoBotClient:
         resp.raise_for_status()
         return resp.json()
     
-    def get_profile(
-        self,
-        robot_id: str,
-        entity_type: str,
-        entity_id: str
-    ) -> Dict[str, Any]:
+    def get_profile(self, robot_id: str, entity_type: str, entity_id: str) -> Dict:
         """Get profile for a user, location, or object."""
         resp = self.session.get(
             f"{self.api_url}/v1/memory/profile",
@@ -146,39 +185,15 @@ class MemoBotClient:
         return resp.json()
     
     # ==========================================================================
-    # Video Memory
+    # Video Upload
     # ==========================================================================
     
-    def search_video_memory(
-        self,
-        robot_id: str,
-        query: str,
-        limit: int = 10
-    ) -> Dict[str, Any]:
-        """
-        Search video memories using natural language.
-        
-        Example queries: "person waving", "red cup on table"
-        """
-        resp = self.session.post(
-            f"{self.api_url}/v1/memory/video/search",
-            json={"robot_id": robot_id, "query": query, "limit": limit}
-        )
-        resp.raise_for_status()
-        return resp.json()
-    
-    def upload_video(
-        self,
-        robot_id: str,
-        video_path: str,
-        user_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def upload_video(self, robot_id: str, video_path: str, user_id: str = None) -> Dict:
         """Upload a video file for processing."""
         with open(video_path, 'rb') as f:
             data = {'robot_id': robot_id}
             if user_id:
                 data['user_id'] = user_id
-            
             resp = requests.post(
                 f"{self.api_url}/v1/memory/video/upload",
                 files={'video_file': f},
@@ -188,32 +203,109 @@ class MemoBotClient:
         resp.raise_for_status()
         return resp.json()
     
-    def upload_video_from_url(
-        self,
-        robot_id: str,
-        video_url: str,
-        user_id: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Upload a video from URL."""
-        payload = {"robot_id": robot_id, "video_url": video_url}
-        if user_id:
-            payload["user_id"] = user_id
+    def create_stream_client(self, robot_id: str) -> "MemoBotStreamClient":
+        """Create a client for streaming multimodal data."""
+        return MemoBotStreamClient(self.api_url, self.api_key, robot_id)
+
+
+class MemoBotStreamClient:
+    """
+    Client for streaming video segments to MemoBot.
+    
+    IMPORTANT: Send complete video segments (MP4/WebM), not raw frames.
+    Use ffmpeg to create segments on the robot:
+        ffmpeg -i /dev/video0 -c:v libx264 -f segment -segment_time 5 chunk_%03d.mp4
+    
+    Example:
+        stream = client.create_stream_client("robot-123")
+        await stream.connect(user_id="john")
         
-        resp = self.session.post(f"{self.api_url}/v1/memory/video/from-url", json=payload)
-        resp.raise_for_status()
-        return resp.json()
+        # Send pre-encoded video segments
+        for chunk_path in glob.glob("chunk_*.mp4"):
+            with open(chunk_path, "rb") as f:
+                memory_id = await stream.send_segment(f.read())
+                print(f"Stored: {memory_id}")
+    """
     
-    def get_video_event(self, video_event_id: str) -> Dict[str, Any]:
-        """Get details of a video event."""
-        resp = self.session.get(f"{self.api_url}/v1/memory/video/{video_event_id}")
-        resp.raise_for_status()
-        return resp.json()
+    def __init__(self, api_url: str, api_key: str, robot_id: str):
+        self.api_url = api_url
+        self.api_key = api_key
+        self.robot_id = robot_id
+        
+        ws_url = api_url.replace("https://", "wss://").replace("http://", "ws://")
+        self.ws_url = f"{ws_url}/v1/ws/stream/{robot_id}"
+        
+        self.websocket = None
+        self._authenticated = False
     
-    def get_recent_videos(self, robot_id: str, limit: int = 20) -> List[Dict[str, Any]]:
-        """Get recent video events for a robot."""
-        resp = self.session.get(
-            f"{self.api_url}/v1/memory/video/robot/{robot_id}/recent",
-            params={"limit": limit}
-        )
-        resp.raise_for_status()
-        return resp.json()
+    async def connect(self, user_id: str = None, session_id: str = None):
+        """Connect and authenticate."""
+        try:
+            import websockets
+        except ImportError:
+            raise ImportError("Install websockets: pip install websockets")
+        
+        self.websocket = await websockets.connect(self.ws_url)
+        
+        # Wait for connection
+        msg = json.loads(await self.websocket.recv())
+        if msg.get("type") != "connected":
+            raise Exception(f"Connection failed: {msg}")
+        
+        # Authenticate
+        await self.websocket.send(json.dumps({"type": "auth", "api_key": self.api_key}))
+        msg = json.loads(await self.websocket.recv())
+        if msg.get("type") != "authenticated":
+            raise Exception(f"Auth failed: {msg}")
+        
+        self._authenticated = True
+        
+        # Set metadata
+        if user_id or session_id:
+            await self.websocket.send(json.dumps({
+                "type": "metadata",
+                "user_id": user_id,
+                "session_id": session_id
+            }))
+            await self.websocket.recv()
+    
+    async def send_segment(self, video_data: bytes, action: str = None) -> str:
+        """
+        Send a complete video segment.
+        
+        Args:
+            video_data: Complete video file bytes (MP4, WebM, etc.)
+            action: Optional robot action during this segment
+        
+        Returns:
+            memory_id of the stored segment
+        """
+        if not self._authenticated:
+            raise Exception("Not connected. Call connect() first.")
+        
+        # Send as binary for efficiency
+        await self.websocket.send(video_data)
+        
+        # Wait for ack
+        msg = json.loads(await self.websocket.recv())
+        if msg.get("type") == "ack_stored":
+            return msg.get("memory_id")
+        elif msg.get("type") == "error":
+            raise Exception(f"Server error: {msg.get('error')}")
+        else:
+            raise Exception(f"Unexpected response: {msg}")
+    
+    async def record_action(self, action: str):
+        """Record a robot action (without video)."""
+        if not self._authenticated:
+            raise Exception("Not connected. Call connect() first.")
+        
+        await self.websocket.send(json.dumps({"type": "action", "action": action}))
+        await self.websocket.recv()
+    
+    async def close(self):
+        """Close connection."""
+        if self.websocket:
+            await self.websocket.close()
+            self.websocket = None
+            self._authenticated = False

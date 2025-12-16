@@ -1,160 +1,276 @@
 # MemoBot Architecture
 
-## System Overview
+## User Journey
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                         Robot/Client                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
-│  │ Speech/Text  │  │ Actions/      │  │ Video Camera         │   │
-│  │ Events       │  │ Sensors       │  │ Stream (5s chunks)   │   │
-│  └──────┬───────┘  └──────┬───────┘  └──────────┬───────────┘   │
-└─────────┼─────────────────┼─────────────────────┼───────────────┘
-          │ REST            │ REST                │ WebSocket
-          ▼                 ▼                     ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                       MemoBot API (FastAPI)                      │
-│  ┌────────────────┐  ┌────────────────┐  ┌─────────────────────┐│
-│  │ /v1/events     │  │ /v1/memory     │  │ /v1/ws/video/{id}   ││
-│  └───────┬────────┘  └───────┬────────┘  └──────────┬──────────┘│
-└──────────┼───────────────────┼──────────────────────┼───────────┘
-           │                   │                      │
-           ▼                   ▼                      ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                      Celery Workers                              │
-│  ┌──────────────────────┐  ┌────────────────────────────────┐   │
-│  │ Summarization        │  │ Video Processing               │   │
-│  │ Profile Updates      │  │ → Upload to Twelve Labs        │   │
-│  │                      │  │ → Extract transcript/gist      │   │
-│  └──────────────────────┘  └────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────┘
-           │                   │                      │
-           ▼                   ▼                      ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                         Storage                                  │
-│  ┌────────────────────────────┐  ┌───────────────────────────┐  │
-│  │ PostgreSQL + pgvector      │  │ Twelve Labs (Video Index) │  │
-│  │ • Events, Sessions         │  │ • Multimodal Embeddings   │  │
-│  │ • Profiles, VideoEvents    │  │ • Visual + Audio Search   │  │
-│  │ • Text Embeddings          │  └───────────────────────────┘  │
-│  └────────────────────────────┘                                  │
-└──────────────────────────────────────────────────────────────────┘
+┌────────┐          ┌──────────────┐          ┌─────────────────┐          ┌─────────────────┐
+│  User  │          │ Robot(Agent) │          │ MemoBot (API)   │          │ MemoBot Storage │
+└───┬────┘          └──────┬───────┘          └────────┬────────┘          └────────┬────────┘
+    │                      │                           │                            │
+    │   ╔══════════════════════════════════════════════════════════════════════╗   │
+    │   ║         Continuous Multimodal Memory Ingestion                       ║   │
+    │   ╚══════════════════════════════════════════════════════════════════════╝   │
+    │                      │                           │                            │
+    │                      │  ┌─────────────────────┐  │                            │
+    │                      │  │ loop [Realtime]     │  │                            │
+    │                      │  │                     │  │                            │
+    │                      │──┼─sendFrame({video,───┼─▶│                            │
+    │                      │  │  audio, action, ts})│  │                            │
+    │                      │  │                     │  │  store(embedding, metadata)│
+    │                      │  │                     │  │───────────────────────────▶│
+    │                      │  │                     │  │                            │
+    │                      │  │                     │  │◀──────ack(memoryId)────────│
+    │                      │  │                     │  │                            │
+    │                      │◀─┼──ackStored(memoryId)┼──│                            │
+    │                      │  │                     │  │                            │
+    │                      │  └─────────────────────┘  │                            │
+    │                      │                           │                            │
+    │   ╔══════════════════════════════════════════════════════════════════════╗   │
+    │   ║              User Asks About Past Event                              ║   │
+    │   ╚══════════════════════════════════════════════════════════════════════╝   │
+    │                      │                           │                            │
+    │  "Where did I put    │                           │                            │
+    │   my keys?"          │                           │                            │
+    │─────────────────────▶│                           │                            │
+    │                      │                           │                            │
+    │                      │  retrieveMemory({query,   │                            │
+    │                      │   optionalContext})       │                            │
+    │                      │──────────────────────────▶│                            │
+    │                      │                           │                            │
+    │                      │                           │  search({query, embedding})│
+    │                      │                           │───────────────────────────▶│
+    │                      │                           │                            │
+    │                      │                           │◀─memoryContext({clips,─────│
+    │                      │                           │   events, objects})        │
+    │                      │                           │                            │
+    │                      │◀────memoryContext─────────│                            │
+    │                      │                           │                            │
+    │  "You put your keys  │                           │                            │
+    │   on the desk at     │                           │                            │
+    │   3:42 PM."          │                           │                            │
+    │◀─────────────────────│                           │                            │
+    │                      │                           │                            │
 ```
 
-## Data Models
+## System Components
 
-### Event
-Stores all observations (speech, vision, actions):
-```sql
-events (
-  event_id UUID PRIMARY KEY,
-  robot_id VARCHAR NOT NULL,
-  user_id VARCHAR,
-  timestamp TIMESTAMPTZ NOT NULL,
-  source VARCHAR NOT NULL,      -- 'speech', 'vision', 'action'
-  type VARCHAR NOT NULL,        -- 'USER_SAID', 'ROBOT_SAID', etc.
-  text TEXT,
-  metadata JSONB,
-  session_id UUID,
-  embedding VECTOR(384)         -- all-MiniLM-L6-v2
-)
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                            Robot / Agent                                │
+│                                                                         │
+│   Camera ──┐                                                            │
+│   Mic    ──┼──▶ sendFrame({video, audio, action, ts}) ──┐               │
+│   Actions ─┘                                            │               │
+│                                                         │ WebSocket     │
+│   User Query ──▶ retrieveMemory({query}) ───────────────┼───┐           │
+│                                                         │   │ REST      │
+└─────────────────────────────────────────────────────────┼───┼───────────┘
+                                                          │   │
+                                                          ▼   ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         MemoBot API (FastAPI)                           │
+│                                                                         │
+│   WebSocket Handler ─────▶ Extract Embeddings ─────▶ Store              │
+│   /v1/ws/stream/{robot}      (Twelve Labs)            (PostgreSQL)      │
+│                                                                         │
+│   REST Endpoints ────────▶ Search ──────────────────▶ Return Context    │
+│   /v1/memory/retrieve        (Vector + Twelve Labs)                     │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+                                        │
+                                        ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          MemoBot Storage                                │
+│                                                                         │
+│   ┌─────────────────────────┐    ┌─────────────────────────────────┐   │
+│   │  PostgreSQL + pgvector  │    │  Twelve Labs (Video Index)      │   │
+│   │                         │    │                                 │   │
+│   │  • events (text embed)  │    │  • Multimodal embeddings        │   │
+│   │  • memories (metadata)  │    │  • Visual + Audio search        │   │
+│   │  • profiles             │    │  • Transcription                │   │
+│   └─────────────────────────┘    └─────────────────────────────────┘   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Session
-Groups events into interactions:
-```sql
-sessions (
-  session_id UUID PRIMARY KEY,
-  robot_id VARCHAR NOT NULL,
-  user_id VARCHAR,
-  start_time TIMESTAMPTZ,
-  end_time TIMESTAMPTZ,
-  summary TEXT                  -- LLM-generated summary
-)
+## Data Flow
+
+### 1. Memory Ingestion (Continuous)
+
+```
+Robot sends complete video segments (~5 seconds each):
+- Binary: raw MP4/WebM bytes
+- OR JSON: {"type": "segment", "video": "<base64 MP4>", "action": "MOVING"}
+
+The robot should use ffmpeg to create segments:
+  ffmpeg -i /dev/video0 -c:v libx264 -f segment -segment_time 5 chunk_%03d.mp4
+
+MemoBot:
+1. Receives complete video segment
+2. Uploads to Twelve Labs → gets multimodal embedding
+3. Stores in PostgreSQL: {memory_id, robot_id, timestamp, twelve_labs_id, metadata}
+4. Acks to robot: {"type": "ack_stored", "memory_id": "..."}
 ```
 
-### Profile
-Persistent knowledge about entities:
-```sql
-profiles (
-  profile_id UUID PRIMARY KEY,
-  robot_id VARCHAR NOT NULL,
-  entity_type VARCHAR,          -- 'user', 'location', 'object'
-  entity_id VARCHAR,
-  summary TEXT,
-  facts JSONB                   -- [{subject, predicate, object}]
-)
+### 2. Memory Retrieval
+
+```
+Robot sends query:
+{
+  "query": "Where did I put my keys?",
+  "context": {                    // Optional context
+    "user_id": "john",
+    "location": "living_room",
+    "time_range": "today"
+  }
+}
+
+MemoBot:
+1. Searches Twelve Labs index (visual + audio)
+2. Searches PostgreSQL events (text)
+3. Combines and ranks results
+4. Returns rich context:
+{
+  "clips": [
+    {
+      "memory_id": "abc123",
+      "timestamp": "2024-01-15T15:42:00Z",
+      "description": "User placed keys on wooden desk",
+      "confidence": 0.92
+    }
+  ],
+  "events": [
+    {
+      "timestamp": "2024-01-15T15:42:05Z",
+      "type": "USER_SAID",
+      "text": "I'll just leave my keys here"
+    }
+  ],
+  "objects": ["keys", "desk", "living_room"]
+}
 ```
 
-### VideoEvent
-Video clips and Twelve Labs metadata:
-```sql
-video_events (
-  video_event_id UUID PRIMARY KEY,
-  robot_id VARCHAR NOT NULL,
-  user_id VARCHAR,
-  session_id UUID,
-  start_timestamp TIMESTAMPTZ,
-  end_timestamp TIMESTAMPTZ,
-  duration_seconds FLOAT,
-  video_file_path VARCHAR,      -- Local path or URL
-  twelve_labs_video_id VARCHAR, -- ID in Twelve Labs index
-  transcript TEXT,              -- Speech-to-text
-  scene_description TEXT,       -- Generated description
-  processing_status VARCHAR     -- pending, processing, completed, failed
-)
-```
-
-## Components
-
-### API Endpoints
+## API Endpoints
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/v1/events` | POST | Log events |
-| `/v1/events/{robot_id}` | GET | Query events |
-| `/v1/memory/search-events` | POST | Semantic search |
-| `/v1/memory/answer` | POST | LLM-generated answer |
-| `/v1/memory/profile` | GET | Get entity profile |
-| `/v1/memory/video/upload` | POST | Upload video file |
-| `/v1/memory/video/from-url` | POST | Upload from URL |
-| `/v1/memory/video/search` | POST | Search video memories |
-| `/v1/ws/video/{robot_id}` | WS | Stream video chunks |
+| `/v1/ws/stream/{robot_id}` | WebSocket | Continuous multimodal ingestion |
+| `/v1/memory/retrieve` | POST | Retrieve memories for a query |
+| `/v1/memory/store` | POST | Store single event (text/action) |
+| `/v1/memory/profile/{entity}` | GET | Get entity profile |
 
-### Services
+## Data Models
 
-| Service | Purpose |
-|---------|---------|
-| `EmbeddingService` | Generate text embeddings (OpenAI or local) |
-| `VectorStore` | Similarity search on PostgreSQL/pgvector |
-| `LLMService` | Answer generation using GPT-4 |
-| `TwelveLabsService` | Video upload, indexing, search |
+### Memory (stored in PostgreSQL)
 
-### Background Tasks
+```sql
+memories (
+  memory_id UUID PRIMARY KEY,
+  robot_id VARCHAR NOT NULL,
+  user_id VARCHAR,
+  timestamp TIMESTAMPTZ NOT NULL,
+  
+  -- Content references
+  twelve_labs_video_id VARCHAR,     -- Video in Twelve Labs
+  text_content TEXT,                -- Transcribed/extracted text
+  
+  -- Extracted metadata
+  objects JSONB,                    -- ["keys", "desk", "person"]
+  actions JSONB,                    -- ["placed", "picked_up"]
+  location VARCHAR,
+  
+  -- Embeddings for text search
+  text_embedding VECTOR(384),
+  
+  -- Processing
+  status VARCHAR DEFAULT 'processing'
+)
+```
 
-| Task | Schedule | Purpose |
-|------|----------|---------|
-| `summarize_sessions` | Periodic | Create session summaries |
-| `update_profiles` | On new session | Extract facts to profiles |
-| `process_video_chunk` | On upload | Process video via Twelve Labs |
-| `reprocess_failed_videos` | Periodic | Retry failed video tasks |
+### MemoryContext (returned from retrieval)
 
-## Video Processing Flow
+```python
+class MemoryContext:
+    clips: List[Clip]       # Relevant video moments
+    events: List[Event]     # Related text events  
+    objects: List[str]      # Detected objects
+    summary: str            # LLM-generated summary (optional)
+```
 
-1. **Client** sends 5-second MP4 chunks via WebSocket or uploads via REST
-2. **API** saves file locally, creates `VideoEvent` with status=`pending`
-3. **Celery worker** picks up task:
-   - Uploads to Twelve Labs
-   - Waits for indexing
-   - Extracts transcript and gist
-   - Updates `VideoEvent` with results
-4. **Search** queries Twelve Labs index, matches results to local `VideoEvent`
+## Example Robot Integration
+
+```python
+import asyncio
+import subprocess
+from sdk import MemoBotClient
+
+client = MemoBotClient("http://memobot:8000", "api-key")
+
+# === Continuous Video Ingestion ===
+async def stream_video():
+    """
+    Stream video segments to MemoBot.
+    Uses ffmpeg to create 5-second MP4 segments from camera.
+    """
+    stream = client.create_stream_client("robot-123")
+    await stream.connect(user_id="john")
+    
+    # Start ffmpeg to segment video
+    # ffmpeg -i /dev/video0 -c:v libx264 -f segment -segment_time 5 /tmp/chunk_%03d.mp4
+    
+    segment_num = 0
+    while True:
+        segment_path = f"/tmp/chunk_{segment_num:03d}.mp4"
+        
+        # Wait for segment to be created by ffmpeg
+        while not os.path.exists(segment_path):
+            await asyncio.sleep(0.5)
+        
+        # Send to MemoBot
+        with open(segment_path, "rb") as f:
+            memory_id = await stream.send_segment(f.read())
+            print(f"Stored: {memory_id}")
+        
+        os.remove(segment_path)
+        segment_num += 1
+
+# === Memory Retrieval ===
+def answer_question(user_query: str) -> str:
+    context = client.retrieve_memory(
+        robot_id="robot-123",
+        query=user_query,
+        user_id="john"
+    )
+    
+    # context["context"]["clips"] = video moments
+    # context["context"]["events"] = text events
+    # context["context"]["objects"] = detected objects
+    
+    # Use LLM to generate response
+    answer = client.ask(
+        robot_id="robot-123",
+        question=user_query,
+        user_id="john"
+    )
+    return answer["answer"]
+
+# === Main Loop ===
+async def main():
+    # Start video streaming in background
+    asyncio.create_task(stream_video())
+    
+    # Handle user queries
+    while True:
+        user_input = await get_user_speech()
+        if "remember" in user_input or "where" in user_input:
+            answer = answer_question(user_input)
+            robot.speak(answer)
+```
 
 ## Technology Stack
 
-- **Framework**: FastAPI
-- **Database**: PostgreSQL + pgvector
+- **API**: FastAPI (REST + WebSocket)
+- **Storage**: PostgreSQL + pgvector
+- **Video AI**: Twelve Labs (multimodal embeddings)
 - **Queue**: Redis + Celery
-- **Video**: Twelve Labs API
-- **LLM**: OpenAI GPT-4
-- **Embeddings**: OpenAI or sentence-transformers
+- **Embeddings**: OpenAI / sentence-transformers

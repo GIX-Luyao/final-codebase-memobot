@@ -26,6 +26,7 @@ class TwelveLabsService:
         self.api_key = settings.twelve_labs_api_key
         self.index_name = settings.twelve_labs_index_name
         self._index_id: Optional[str] = None
+        self._index_lock = asyncio.Lock()
     
     @property
     def headers(self) -> Dict[str, str]:
@@ -35,33 +36,40 @@ class TwelveLabsService:
         }
     
     async def _get_index_id(self) -> str:
-        """Get or create index ID."""
+        """Get or create index ID (thread-safe)."""
         if self._index_id:
             return self._index_id
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Check existing indexes
-            resp = await client.get(f"{self.BASE_URL}/indexes", headers=self.headers)
-            if resp.status_code == 200:
-                for idx in resp.json().get("data", []):
-                    if idx["name"] == self.index_name:
-                        self._index_id = idx["_id"]
-                        return self._index_id
-            
-            # Create new index
-            resp = await client.post(
-                f"{self.BASE_URL}/indexes",
-                headers=self.headers,
-                json={
-                    "name": self.index_name,
-                    "engines": [{"name": "marengo2.6", "options": ["visual", "audio"]}]
-                }
-            )
-            if resp.status_code == 201:
-                self._index_id = resp.json()["_id"]
+        async with self._index_lock:
+            # Double-check after acquiring lock
+            if self._index_id:
                 return self._index_id
             
-            raise Exception(f"Failed to create index: {resp.text}")
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Check existing indexes
+                resp = await client.get(f"{self.BASE_URL}/indexes", headers=self.headers)
+                if resp.status_code == 200:
+                    for idx in resp.json().get("data", []):
+                        if idx.get("name") == self.index_name:
+                            self._index_id = idx.get("_id")
+                            if self._index_id:
+                                return self._index_id
+                
+                # Create new index
+                resp = await client.post(
+                    f"{self.BASE_URL}/indexes",
+                    headers=self.headers,
+                    json={
+                        "name": self.index_name,
+                        "engines": [{"name": "marengo2.6", "options": ["visual", "audio"]}]
+                    }
+                )
+                if resp.status_code == 201:
+                    self._index_id = resp.json().get("_id")
+                    if self._index_id:
+                        return self._index_id
+                
+                raise Exception(f"Failed to create index: {resp.text}")
     
     async def upload_video(self, video_path: str) -> str:
         """Upload a local video file. Returns task_id."""

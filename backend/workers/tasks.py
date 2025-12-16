@@ -48,8 +48,12 @@ def process_video_chunk(self, video_event_id: str):
     db = SessionLocal()
     
     try:
+        # Convert string to UUID for query
+        from uuid import UUID as PyUUID
+        event_uuid = PyUUID(video_event_id)
+        
         video_event = db.query(VideoEvent).filter(
-            VideoEvent.video_event_id == video_event_id
+            VideoEvent.video_event_id == event_uuid
         ).first()
         
         if not video_event:
@@ -69,8 +73,10 @@ def process_video_chunk(self, video_event_id: str):
         
         # Mark as failed
         try:
+            from uuid import UUID as PyUUID
+            event_uuid = PyUUID(video_event_id)
             video_event = db.query(VideoEvent).filter(
-                VideoEvent.video_event_id == video_event_id
+                VideoEvent.video_event_id == event_uuid
             ).first()
             if video_event:
                 video_event.processing_status = "failed"

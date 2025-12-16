@@ -36,19 +36,13 @@ app = FastAPI(
     description="""
     Memory Layer for Robots - Semantic memory storage and retrieval.
     
-    ## Features
+    ## Key Endpoints
     
-    - **Event Ingestion**: Store observations, speech, actions, and other events
-    - **Semantic Search**: Find relevant memories using natural language
-    - **Video Processing**: Real-time video streaming with multimodal embeddings (Twelve Labs)
-    - **Profile Management**: Persistent knowledge about users, locations, objects
-    
-    ## Video Streaming
-    
-    Use the WebSocket endpoint `/v1/ws/video/{robot_id}` for real-time video streaming.
-    See the endpoint documentation for the protocol details.
+    - **POST /v1/memory/retrieve** - Retrieve memories (clips, events, objects) for a query
+    - **WS /v1/ws/stream/{robot_id}** - Stream video/audio/actions in real-time
+    - **POST /v1/memory/answer** - Get LLM-generated answer from memories
     """,
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan
 )
 
@@ -74,15 +68,13 @@ async def root():
     """Root endpoint."""
     return {
         "service": "MemoBot API",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "status": "online",
         "docs": "/docs",
-        "features": {
-            "events": True,
-            "memory_search": True,
-            "profiles": True,
-            "video_processing": settings.enable_video_processing,
-            "video_websocket": "/v1/ws/video/{robot_id}"
+        "endpoints": {
+            "stream": "/v1/ws/stream/{robot_id}",
+            "retrieve": "/v1/memory/retrieve",
+            "answer": "/v1/memory/answer"
         }
     }
 

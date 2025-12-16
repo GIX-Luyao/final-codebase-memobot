@@ -2,21 +2,28 @@
 
 Semantic memory storage and retrieval for humanoid robots.
 
-**Features:**
-- Store speech, vision, and action events with embeddings
-- Natural language memory search
-- Real-time video streaming with Twelve Labs multimodal search
-- Automatic user/location/object profiles
-- LLM-powered question answering
+## How It Works
+
+```
+┌────────┐                    ┌─────────────────┐                    ┌─────────────────┐
+│ Robot  │ ──sendSegment()──▶ │  MemoBot API    │ ──store()───────▶  │ MemoBot Storage │
+│        │ (5-sec MP4 chunk)  │                 │ (embedding,        │ (PostgreSQL +   │
+│        │                    │                 │  metadata)         │  Twelve Labs)   │
+└────────┘                    └─────────────────┘                    └─────────────────┘
+    │                               │                                       │
+    │ "Where did I put my keys?"    │                                       │
+    │─────────────────────────────▶ │ ──search()─────────────────────────▶  │
+    │                               │                                       │
+    │                               │ ◀──memoryContext({clips,events})────  │
+    │ ◀──────────────────────────── │                                       │
+    │ "You put them on the desk     │                                       │
+    │  at 3:42 PM"                  │                                       │
+```
 
 ## Quick Start
 
 ```bash
-# Start services
 docker-compose up -d
-
-# Verify
-curl http://localhost:8000/health
 ```
 
 ## SDK Usage
@@ -26,64 +33,69 @@ from sdk import MemoBotClient
 
 client = MemoBotClient("http://localhost:8000", "your-api-key")
 
-# Log events
-client.log_speech(robot_id="robot-1", text="I like quiet spaces", speaker="user", user_id="user-1")
+# === Store memories ===
+client.log_speech(robot_id="robot-1", text="I put my keys on the desk", speaker="user")
 
-# Search memory
-results = client.search_memory(robot_id="robot-1", query="user preferences")
+# === Retrieve memories ===
+context = client.retrieve_memory(
+    robot_id="robot-1",
+    query="Where did I put my keys?"
+)
 
-# Ask questions
-answer = client.ask_memory(robot_id="robot-1", question="What does this user prefer?")
+print(context["context"]["clips"])    # Video clips matching query
+print(context["context"]["events"])   # Text events matching query  
+print(context["context"]["objects"])  # Detected objects
 
-# Search video
-results = client.search_video_memory(robot_id="robot-1", query="person waving")
+# === Get LLM answer ===
+answer = client.ask(robot_id="robot-1", question="Where are my keys?")
+print(answer["answer"])  # "You put your keys on the desk."
+```
+
+## Stream Video Segments
+
+Robots must send **complete video segments** (MP4/WebM), not raw frames.
+Use ffmpeg on the robot to create segments:
+
+```bash
+ffmpeg -i /dev/video0 -c:v libx264 -f segment -segment_time 5 chunk_%03d.mp4
+```
+
+```python
+import asyncio
+import glob
+
+async def stream_video_segments():
+    stream = client.create_stream_client("robot-1")
+    await stream.connect(user_id="john")
+    
+    for chunk_path in sorted(glob.glob("chunk_*.mp4")):
+        with open(chunk_path, "rb") as f:
+            memory_id = await stream.send_segment(f.read())
+            print(f"Stored: {memory_id}")
+
+asyncio.run(stream_video_segments())
 ```
 
 ## API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/v1/events` | POST | Log event |
-| `/v1/memory/search-events` | POST | Semantic search |
-| `/v1/memory/answer` | POST | LLM-generated answer |
-| `/v1/memory/profile` | GET | Get entity profile |
-| `/v1/memory/video/upload` | POST | Upload video |
-| `/v1/memory/video/search` | POST | Search video memories |
-| `/v1/ws/video/{robot_id}` | WS | Stream video chunks |
-
-Full docs: http://localhost:8000/docs
-
-## Video Streaming
-
-Robots send 5-second MP4 chunks via WebSocket. Each chunk is processed through Twelve Labs for multimodal search.
-
-```python
-# WebSocket protocol
-ws = websocket.connect("ws://localhost:8000/v1/ws/video/robot-123")
-ws.send(json.dumps({"type": "auth", "api_key": "your-key"}))
-ws.send(mp4_chunk_bytes)  # Binary video data
-```
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/v1/ws/stream/{robot_id}` | WS | Stream video/audio/actions |
+| `/v1/memory/retrieve` | POST | Get clips, events, objects for query |
+| `/v1/memory/answer` | POST | Get LLM-generated answer |
+| `/v1/events` | POST | Store text event |
+| `/v1/memory/profile` | GET | Get user/location profile |
 
 ## Configuration
 
 ```bash
-# .env file
+# .env
 DATABASE_URL=postgresql://user:pass@localhost:5432/memobot
 REDIS_URL=redis://localhost:6379/0
-OPENAI_API_KEY=sk-...
-TWELVE_LABS_API_KEY=tlk_...
+OPENAI_API_KEY=sk-...           # For text embeddings + LLM
+TWELVE_LABS_API_KEY=tlk_...     # For video embeddings
 ```
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system design.
-
-```
-Robot → REST/WebSocket → FastAPI → Celery Workers
-                              ↓
-              PostgreSQL (text) + Twelve Labs (video)
-```
-
-## License
-
-MIT
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design.
