@@ -1,0 +1,40 @@
+# TwelveLabs Video Memory Pipeline
+
+## Setup
+
+1. Activate the virtual environment:
+   ```bash
+   source venv/bin/activate
+   ```
+
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+## Usage
+
+### Ingesting Video Chunks
+
+Run `pipeline.py` to process a 6-second video chunk. This script will:
+- Generate 3 embeddings (video, text, audio) using TwelveLabs
+- Insert the embeddings into Pinecone
+
+```bash
+python pipeline.py
+```
+
+### Querying Memories
+
+Run `query.py` to ask questions about your video memories:
+
+```bash
+python query.py "What happened in the kitchen?"
+```
+
+Or run it interactively:
+```bash
+python query.py
+```
+
+BE CAREFUL NOT TO USE CREDITS, JUST USE 1 SIX SECOND CHUNK AT A TIME
