@@ -12,7 +12,7 @@ class Agent:
         self.conversation_history = [
             {
                 "role": "system",
-                "content": "You are a helpful assistant with access to a memory system. When users ask about past events, use the retrieveMemory function to find relevant information.",
+                "content": "You are a helpful assistant with access to a memory system. When users ask about past events, use the retrieveMemory function to find relevant information. When you are unsure, do not make up information.",
             }
         ]
 
@@ -29,7 +29,7 @@ class Agent:
         self.conversation_history = [
             {
                 "role": "system",
-                "content": "You are a helpful assistant with access to a memory system. When users ask about past events, use the retrieveMemory function to find relevant information.",
+                "content": "You are a helpful assistant with access to a memory system. When users ask about past events, use the retrieveMemory function to find relevant information. When you are unsure, do not make up information.",
             }
         ]
 
@@ -46,7 +46,7 @@ class Agent:
                         "properties": {
                             "queryText": {
                                 "type": "string",
-                                "description": "The natural language query to search for memories",
+                                "description": "The natural language query to search for memories. The query should be specific about the event or item being searched. Specific details such as time, location and name/person_id will help retrieve the most relevant memories.",
                             },
                         },
                         "required": ["queryText"],
