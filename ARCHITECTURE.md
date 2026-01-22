@@ -1,437 +1,276 @@
-# MemoBot Architecture Documentation
+# MemoBot Architecture
 
-## Overview
-
-MemoBot is a semantic memory layer designed for humanoid robots and AI agents. It provides persistent, searchable memory with intelligent retrieval and summarization capabilities.
-
-## System Architecture
-
-### High-Level Components
+## User Journey
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Robot / Client                          │
-│                      (uses SDK or REST API)                     │
-└────────────────────────────┬────────────────────────────────────┘
-                             │
-                             │ HTTPS + Bearer Token
-                             │
-┌────────────────────────────▼────────────────────────────────────┐
-│                        API Gateway                              │
-│                     (FastAPI Application)                       │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────┐ │
-│  │  Event Ingestion │  │  Memory Queries  │  │  Profiles    │ │
-│  │   /v1/events     │  │  /v1/memory/*    │  │              │ │
-│  └──────────────────┘  └──────────────────┘  └──────────────┘ │
-└────────────────┬────────────────┬────────────────┬─────────────┘
-                 │                │                │
-                 ▼                ▼                ▼
-┌────────────────────────────────────────────────────────────────┐
-│                     Services Layer                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐ │
-│  │  Embedding   │  │ Vector Store │  │    LLM Service       │ │
-│  │  Service     │  │   Service    │  │  (Summarization)     │ │
-│  └──────────────┘  └──────────────┘  └──────────────────────┘ │
-└────────────────┬────────────────┬────────────────┬─────────────┘
-                 │                │                │
-                 ▼                ▼                ▼
-┌────────────────────────────────────────────────────────────────┐
-│                     Storage Layer                              │
-│  ┌──────────────────┐           ┌─────────────────────────┐   │
-│  │   PostgreSQL     │           │      Redis              │   │
-│  │  + pgvector      │           │  (Task Queue/Cache)     │   │
-│  │                  │           └─────────────────────────┘   │
-│  │  - events        │                                          │
-│  │  - sessions      │                                          │
-│  │  - profiles      │                                          │
-│  │  - embeddings    │                                          │
-│  └──────────────────┘                                          │
-└────────────────────────────────────────────────────────────────┘
-                 ▲
-                 │ Periodic Tasks
-                 │
-┌────────────────┴────────────────────────────────────────────────┐
-│                   Background Workers                            │
-│                     (Celery Workers)                            │
-│  ┌──────────────────┐           ┌─────────────────────────┐    │
-│  │  Session         │           │  Profile                │    │
-│  │  Summarization   │           │  Updates                │    │
-│  └──────────────────┘           └─────────────────────────┘    │
-└─────────────────────────────────────────────────────────────────┘
+┌────────┐          ┌──────────────┐          ┌─────────────────┐          ┌─────────────────┐
+│  User  │          │ Robot(Agent) │          │ MemoBot (API)   │          │ MemoBot Storage │
+└───┬────┘          └──────┬───────┘          └────────┬────────┘          └────────┬────────┘
+    │                      │                           │                            │
+    │   ╔══════════════════════════════════════════════════════════════════════╗   │
+    │   ║         Continuous Multimodal Memory Ingestion                       ║   │
+    │   ╚══════════════════════════════════════════════════════════════════════╝   │
+    │                      │                           │                            │
+    │                      │  ┌─────────────────────┐  │                            │
+    │                      │  │ loop [Realtime]     │  │                            │
+    │                      │  │                     │  │                            │
+    │                      │──┼─sendFrame({video,───┼─▶│                            │
+    │                      │  │  audio, action, ts})│  │                            │
+    │                      │  │                     │  │  store(embedding, metadata)│
+    │                      │  │                     │  │───────────────────────────▶│
+    │                      │  │                     │  │                            │
+    │                      │  │                     │  │◀──────ack(memoryId)────────│
+    │                      │  │                     │  │                            │
+    │                      │◀─┼──ackStored(memoryId)┼──│                            │
+    │                      │  │                     │  │                            │
+    │                      │  └─────────────────────┘  │                            │
+    │                      │                           │                            │
+    │   ╔══════════════════════════════════════════════════════════════════════╗   │
+    │   ║              User Asks About Past Event                              ║   │
+    │   ╚══════════════════════════════════════════════════════════════════════╝   │
+    │                      │                           │                            │
+    │  "Where did I put    │                           │                            │
+    │   my keys?"          │                           │                            │
+    │─────────────────────▶│                           │                            │
+    │                      │                           │                            │
+    │                      │  retrieveMemory({query,   │                            │
+    │                      │   optionalContext})       │                            │
+    │                      │──────────────────────────▶│                            │
+    │                      │                           │                            │
+    │                      │                           │  search({query, embedding})│
+    │                      │                           │───────────────────────────▶│
+    │                      │                           │                            │
+    │                      │                           │◀─memoryContext({clips,─────│
+    │                      │                           │   events, objects})        │
+    │                      │                           │                            │
+    │                      │◀────memoryContext─────────│                            │
+    │                      │                           │                            │
+    │  "You put your keys  │                           │                            │
+    │   on the desk at     │                           │                            │
+    │   3:42 PM."          │                           │                            │
+    │◀─────────────────────│                           │                            │
+    │                      │                           │                            │
 ```
 
-## Data Model
-
-### Core Tables
-
-#### 1. Events Table
-
-The central log of everything the robot observes and does.
-
-```sql
-events (
-  event_id      UUID PRIMARY KEY,
-  robot_id      TEXT NOT NULL,
-  user_id       TEXT NULL,
-  timestamp     TIMESTAMPTZ NOT NULL,
-  source        TEXT NOT NULL,     -- 'speech', 'vision', 'system', 'action'
-  type          TEXT NOT NULL,     -- 'USER_SAID', 'ROBOT_SAID', etc.
-  text          TEXT NULL,
-  metadata      JSONB,
-  session_id    UUID NULL,
-  embedding     VECTOR(384),       -- pgvector type
-  created_at    TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE INDEX idx_robot_user_timestamp ON events(robot_id, user_id, timestamp);
-CREATE INDEX idx_robot_timestamp ON events(robot_id, timestamp);
-CREATE INDEX idx_session_timestamp ON events(session_id, timestamp);
-```
-
-**Fields:**
-- `event_id`: Unique identifier
-- `robot_id`: Which robot created this event
-- `user_id`: Associated user (if applicable)
-- `timestamp`: When the event occurred
-- `source`: Category of event source
-- `type`: Specific event type
-- `text`: Textual content (for embedding)
-- `metadata`: Flexible JSON for extra data (location, objects, etc.)
-- `session_id`: Groups related events
-- `embedding`: Vector representation for semantic search
-
-#### 2. Sessions Table
-
-Groups of related events (conversations, interactions).
-
-```sql
-sessions (
-  session_id    UUID PRIMARY KEY,
-  robot_id      TEXT NOT NULL,
-  user_id       TEXT NULL,
-  start_time    TIMESTAMPTZ NOT NULL,
-  end_time      TIMESTAMPTZ NOT NULL,
-  summary       TEXT,
-  metadata      JSONB,
-  created_at    TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE INDEX idx_robot_user_time ON sessions(robot_id, user_id, start_time);
-```
-
-**Purpose:**
-- Group events that belong together
-- Provide summaries of interactions
-- Enable fast retrieval of conversation history
-
-#### 3. Profiles Table
-
-Persistent knowledge about entities (users, locations, objects).
-
-```sql
-profiles (
-  profile_id    UUID PRIMARY KEY,
-  robot_id      TEXT NOT NULL,
-  entity_type   TEXT NOT NULL,    -- 'user', 'location', 'object'
-  entity_id     TEXT NOT NULL,
-  summary       TEXT,
-  facts         JSONB,             -- [{subject, predicate, object, confidence}]
-  last_updated  TIMESTAMPTZ NOT NULL,
-  created_at    TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE UNIQUE INDEX idx_robot_entity ON profiles(robot_id, entity_type, entity_id);
-```
-
-**Purpose:**
-- Cache stable knowledge about entities
-- Fast lookup without searching all events
-- Confidence-weighted facts
-
-## API Layer
-
-### Authentication
-
-All endpoints require Bearer token authentication:
+## System Components
 
 ```
-Authorization: Bearer <API_KEY>
+┌─────────────────────────────────────────────────────────────────────────┐
+│                            Robot / Agent                                │
+│                                                                         │
+│   Camera ──┐                                                            │
+│   Mic    ──┼──▶ sendFrame({video, audio, action, ts}) ──┐               │
+│   Actions ─┘                                            │               │
+│                                                         │ WebSocket     │
+│   User Query ──▶ retrieveMemory({query}) ───────────────┼───┐           │
+│                                                         │   │ REST      │
+└─────────────────────────────────────────────────────────┼───┼───────────┘
+                                                          │   │
+                                                          ▼   ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         MemoBot API (FastAPI)                           │
+│                                                                         │
+│   WebSocket Handler ─────▶ Extract Embeddings ─────▶ Store              │
+│   /v1/ws/stream/{robot}      (Twelve Labs)            (PostgreSQL)      │
+│                                                                         │
+│   REST Endpoints ────────▶ Search ──────────────────▶ Return Context    │
+│   /v1/memory/retrieve        (Vector + Twelve Labs)                     │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+                                        │
+                                        ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          MemoBot Storage                                │
+│                                                                         │
+│   ┌─────────────────────────┐    ┌─────────────────────────────────┐   │
+│   │  PostgreSQL + pgvector  │    │  Twelve Labs (Video Index)      │   │
+│   │                         │    │                                 │   │
+│   │  • events (text embed)  │    │  • Multimodal embeddings        │   │
+│   │  • memories (metadata)  │    │  • Visual + Audio search        │   │
+│   │  • profiles             │    │  • Transcription                │   │
+│   └─────────────────────────┘    └─────────────────────────────────┘   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-In production, implement proper API key management:
-- Store hashed keys in database
-- Rate limiting per key
-- Key rotation
-- Scope-based permissions
+## Data Flow
 
-### Endpoint Design
+### 1. Memory Ingestion (Continuous)
 
-#### Ingestion Endpoints
+```
+Robot sends complete video segments (~5 seconds each):
+- Binary: raw MP4/WebM bytes
+- OR JSON: {"type": "segment", "video": "<base64 MP4>", "action": "MOVING"}
 
-**POST /v1/events**
-- Accepts single event
-- Validates schema
-- Stores in database
-- Generates embedding (async)
-- Returns event_id
+The robot should use ffmpeg to create segments:
+  ffmpeg -i /dev/video0 -c:v libx264 -f segment -segment_time 5 chunk_%03d.mp4
 
-**POST /v1/events/batch**
-- Accepts multiple events
-- Optimized for bulk ingestion
-- Returns results array
-
-#### Query Endpoints
-
-**POST /v1/memory/search-events**
-- RAG primitive
-- Semantic similarity search
-- Supports filters (time, source, type)
-- Returns ranked events
-
-**POST /v1/memory/answer**
-- High-level query interface
-- Retrieves relevant events
-- Feeds to LLM
-- Returns structured answer + evidence
-
-**GET /v1/memory/profile**
-- Fast profile lookup
-- Creates on-demand if missing
-- Returns summary + facts
-
-## Services Layer
-
-### Embedding Service
-
-**Responsibilities:**
-- Convert text to vector embeddings
-- Support multiple backends (OpenAI, local models)
-- Batch processing for efficiency
-
-**Implementation:**
-```python
-class EmbeddingService:
-    def embed(text: str) -> List[float]
-    def embed_batch(texts: List[str]) -> List[List[float]]
+MemoBot:
+1. Receives complete video segment
+2. Uploads to Twelve Labs → gets multimodal embedding
+3. Stores in PostgreSQL: {memory_id, robot_id, timestamp, twelve_labs_id, metadata}
+4. Acks to robot: {"type": "ack_stored", "memory_id": "..."}
 ```
 
-**Backends:**
-- **OpenAI**: `text-embedding-3-small` (384 dimensions)
-- **Local**: `sentence-transformers/all-MiniLM-L6-v2`
+### 2. Memory Retrieval
 
-**Performance:**
-- OpenAI: ~200ms per request
-- Local: ~50ms per text (GPU), ~200ms (CPU)
-
-### Vector Store Service
-
-**Responsibilities:**
-- Store embeddings with metadata
-- Perform similarity search
-- Handle filtering
-
-**Key Operations:**
-```python
-class VectorStoreService:
-    def add_event_embedding(event_id, text) -> bool
-    def search_similar_events(query, filters) -> List[Event]
-    def get_recent_events(robot_id, limit) -> List[Event]
 ```
-
-**Search Algorithm:**
-- Uses pgvector's cosine distance operator
-- Combines vector similarity with SQL filters
-- Indexes for fast filtering before similarity computation
-
-### LLM Service
-
-**Responsibilities:**
-- Generate answers from events
-- Summarize sessions
-- Extract facts
-
-**Key Operations:**
-```python
-class LLMService:
-    def generate_answer(question, events) -> Dict
-    def summarize_session(events) -> str
-    def extract_facts(events, entity_id) -> List[Fact]
-```
-
-**Prompting Strategy:**
-- System prompt defines role
-- Context: Top-K events formatted clearly
-- Temperature: 0.3 for factual responses
-- Max tokens: 200-500 depending on task
-
-## Background Workers
-
-### Session Summarization Task
-
-**Frequency:** Hourly
-
-**Algorithm:**
-1. Find events without session_id (recent 7 days)
-2. Group by (robot_id, user_id, time proximity)
-3. Time gap threshold: 30 minutes
-4. For each group:
-   - Create session record
-   - Generate LLM summary
-   - Update events with session_id
-
-**Why:**
-- Reduces redundancy in searches
-- Provides high-level view
-- Enables conversation-level queries
-
-### Profile Update Task
-
-**Frequency:** Daily
-
-**Algorithm:**
-1. Find entities with recent activity (24 hours)
-2. For each entity:
-   - Retrieve recent events (limit 50)
-   - Generate summary
-   - Extract facts
-   - Update or create profile
-
-**Why:**
-- Keeps profiles fresh
-- Amortizes LLM cost
-- Fast profile lookups
-
-## Scaling Considerations
-
-### Horizontal Scaling
-
-**API Layer:**
-- Stateless FastAPI instances
-- Load balance with nginx/traefik
-- Auto-scale based on request rate
-
-**Workers:**
-- Multiple Celery workers
-- Task routing by type
-- Priority queues
-
-**Database:**
-- Read replicas for queries
-- Connection pooling
-- Partition events table by time
-
-### Vertical Scaling
-
-**Memory:**
-- Event volume: ~1KB per event
-- 1M events ≈ 1GB (events + embeddings)
-- Profiles: ~10KB each
-
-**CPU:**
-- Embedding generation (if local)
-- Vector similarity computation
-- LLM inference (if local)
-
-### Caching Strategy
-
-**Redis Caching:**
-- Profile cache (TTL: 1 hour)
-- Recent events cache (TTL: 5 minutes)
-- Search result cache (TTL: 1 minute)
-
-## Security
-
-### API Security
-
-1. **Authentication**: Bearer tokens
-2. **Rate Limiting**: Per-key limits
-3. **Input Validation**: Pydantic schemas
-4. **SQL Injection**: Parameterized queries (SQLAlchemy)
-
-### Data Privacy
-
-1. **User Data**: Store only necessary fields
-2. **Encryption**: At-rest (database level)
-3. **Retention**: Configurable data retention policies
-4. **GDPR**: Support for data export/deletion
-
-## Monitoring
-
-### Key Metrics
-
-**API Metrics:**
-- Request rate by endpoint
-- Response time (p50, p95, p99)
-- Error rate
-- Authentication failures
-
-**Storage Metrics:**
-- Event count
-- Database size
-- Vector index size
-- Query latency
-
-**Worker Metrics:**
-- Task queue length
-- Task processing time
-- Success/failure rate
-- Worker health
-
-### Logging
-
-**Structured Logging:**
-```python
+Robot sends query:
 {
-  "timestamp": "2025-11-22T10:00:00Z",
-  "level": "INFO",
-  "service": "api",
-  "robot_id": "robot-123",
-  "endpoint": "/v1/events",
-  "duration_ms": 45
+  "query": "Where did I put my keys?",
+  "context": {                    // Optional context
+    "user_id": "john",
+    "location": "living_room",
+    "time_range": "today"
+  }
+}
+
+MemoBot:
+1. Searches Twelve Labs index (visual + audio)
+2. Searches PostgreSQL events (text)
+3. Combines and ranks results
+4. Returns rich context:
+{
+  "clips": [
+    {
+      "memory_id": "abc123",
+      "timestamp": "2024-01-15T15:42:00Z",
+      "description": "User placed keys on wooden desk",
+      "confidence": 0.92
+    }
+  ],
+  "events": [
+    {
+      "timestamp": "2024-01-15T15:42:05Z",
+      "type": "USER_SAID",
+      "text": "I'll just leave my keys here"
+    }
+  ],
+  "objects": ["keys", "desk", "living_room"]
 }
 ```
 
-## Testing Strategy
+## API Endpoints
 
-### Unit Tests
-- Services (embedding, vector store, LLM)
-- API endpoints
-- Data models
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/v1/ws/stream/{robot_id}` | WebSocket | Continuous multimodal ingestion |
+| `/v1/memory/retrieve` | POST | Retrieve memories for a query |
+| `/v1/memory/store` | POST | Store single event (text/action) |
+| `/v1/memory/profile/{entity}` | GET | Get entity profile |
 
-### Integration Tests
-- End-to-end API flows
-- Database operations
-- Worker tasks
+## Data Models
 
-### Performance Tests
-- Load testing (k6, locust)
-- Embedding generation throughput
-- Search latency under load
+### Memory (stored in PostgreSQL)
 
-## Future Enhancements
+```sql
+memories (
+  memory_id UUID PRIMARY KEY,
+  robot_id VARCHAR NOT NULL,
+  user_id VARCHAR,
+  timestamp TIMESTAMPTZ NOT NULL,
+  
+  -- Content references
+  twelve_labs_video_id VARCHAR,     -- Video in Twelve Labs
+  text_content TEXT,                -- Transcribed/extracted text
+  
+  -- Extracted metadata
+  objects JSONB,                    -- ["keys", "desk", "person"]
+  actions JSONB,                    -- ["placed", "picked_up"]
+  location VARCHAR,
+  
+  -- Embeddings for text search
+  text_embedding VECTOR(384),
+  
+  -- Processing
+  status VARCHAR DEFAULT 'processing'
+)
+```
 
-### Short Term
-- [ ] Webhook support for real-time notifications
-- [ ] Streaming responses for long answers
-- [ ] Multi-tenant support
-- [ ] Advanced analytics dashboard
+### MemoryContext (returned from retrieval)
 
-### Medium Term
-- [ ] Multi-modal embeddings (image + text)
-- [ ] Knowledge graph integration
-- [ ] Federated learning across robots
-- [ ] Compression for old events
+```python
+class MemoryContext:
+    clips: List[Clip]       # Relevant video moments
+    events: List[Event]     # Related text events  
+    objects: List[str]      # Detected objects
+    summary: str            # LLM-generated summary (optional)
+```
 
-### Long Term
-- [ ] Edge deployment (on-robot inference)
-- [ ] Multi-robot memory sharing
-- [ ] Causal reasoning
-- [ ] Continuous learning from feedback
+## Example Robot Integration
 
-## References
+```python
+import asyncio
+import subprocess
+from sdk import MemoBotClient
 
-- [pgvector Documentation](https://github.com/pgvector/pgvector)
-- [FastAPI Documentation](https://fastapi.tiangolo.com/)
-- [Sentence Transformers](https://www.sbert.net/)
-- [Celery Documentation](https://docs.celeryq.dev/)
+client = MemoBotClient("http://memobot:8000", "api-key")
 
+# === Continuous Video Ingestion ===
+async def stream_video():
+    """
+    Stream video segments to MemoBot.
+    Uses ffmpeg to create 5-second MP4 segments from camera.
+    """
+    stream = client.create_stream_client("robot-123")
+    await stream.connect(user_id="john")
+    
+    # Start ffmpeg to segment video
+    # ffmpeg -i /dev/video0 -c:v libx264 -f segment -segment_time 5 /tmp/chunk_%03d.mp4
+    
+    segment_num = 0
+    while True:
+        segment_path = f"/tmp/chunk_{segment_num:03d}.mp4"
+        
+        # Wait for segment to be created by ffmpeg
+        while not os.path.exists(segment_path):
+            await asyncio.sleep(0.5)
+        
+        # Send to MemoBot
+        with open(segment_path, "rb") as f:
+            memory_id = await stream.send_segment(f.read())
+            print(f"Stored: {memory_id}")
+        
+        os.remove(segment_path)
+        segment_num += 1
+
+# === Memory Retrieval ===
+def answer_question(user_query: str) -> str:
+    context = client.retrieve_memory(
+        robot_id="robot-123",
+        query=user_query,
+        user_id="john"
+    )
+    
+    # context["context"]["clips"] = video moments
+    # context["context"]["events"] = text events
+    # context["context"]["objects"] = detected objects
+    
+    # Use LLM to generate response
+    answer = client.ask(
+        robot_id="robot-123",
+        question=user_query,
+        user_id="john"
+    )
+    return answer["answer"]
+
+# === Main Loop ===
+async def main():
+    # Start video streaming in background
+    asyncio.create_task(stream_video())
+    
+    # Handle user queries
+    while True:
+        user_input = await get_user_speech()
+        if "remember" in user_input or "where" in user_input:
+            answer = answer_question(user_input)
+            robot.speak(answer)
+```
+
+## Technology Stack
+
+- **API**: FastAPI (REST + WebSocket)
+- **Storage**: PostgreSQL + pgvector
+- **Video AI**: Twelve Labs (multimodal embeddings)
+- **Queue**: Redis + Celery
+- **Embeddings**: OpenAI / sentence-transformers

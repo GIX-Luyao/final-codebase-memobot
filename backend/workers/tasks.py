@@ -1,15 +1,173 @@
 """Celery tasks for background processing."""
+import asyncio
+import os
 from datetime import datetime, timedelta
 from typing import List
 import uuid
 
 from backend.workers.celery_app import celery_app
 from backend.db.database import SessionLocal
-from backend.db.models import Event, Session as SessionModel, Profile
+from backend.db.models import Event, Session as SessionModel, Profile, VideoEvent
 from backend.services.llm import get_llm_service
 from backend.config import get_settings
 
 settings = get_settings()
+
+
+def _run_async(coro):
+    """Run async coroutine in sync context."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+# =============================================================================
+# Video Processing Tasks
+# =============================================================================
+
+@celery_app.task(
+    name="backend.workers.tasks.process_video_chunk",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60
+)
+def process_video_chunk(self, video_event_id: str):
+    """
+    Process a video through Twelve Labs API.
+    
+    Handles both local files and URLs.
+    """
+    if not settings.enable_video_processing:
+        return {"status": "disabled"}
+    
+    if not settings.twelve_labs_api_key:
+        return {"status": "error", "message": "Twelve Labs API key not configured"}
+    
+    db = SessionLocal()
+    
+    try:
+        # Convert string to UUID for query
+        from uuid import UUID as PyUUID
+        event_uuid = PyUUID(video_event_id)
+        
+        video_event = db.query(VideoEvent).filter(
+            VideoEvent.video_event_id == event_uuid
+        ).first()
+        
+        if not video_event:
+            return {"status": "error", "message": "Video event not found"}
+        
+        if video_event.processing_status == "completed":
+            return {"status": "skipped", "message": "Already processed"}
+        
+        video_event.processing_status = "processing"
+        db.commit()
+        
+        result = _run_async(_process_video(video_event, db))
+        return result
+    
+    except Exception as e:
+        db.rollback()
+        
+        # Mark as failed
+        try:
+            from uuid import UUID as PyUUID
+            event_uuid = PyUUID(video_event_id)
+            video_event = db.query(VideoEvent).filter(
+                VideoEvent.video_event_id == event_uuid
+            ).first()
+            if video_event:
+                video_event.processing_status = "failed"
+                video_event.processing_error = str(e)
+                db.commit()
+        except:
+            pass
+        
+        raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries))
+    
+    finally:
+        db.close()
+
+
+async def _process_video(video_event: VideoEvent, db) -> dict:
+    """Process video through Twelve Labs."""
+    from backend.services.video_embedding import get_twelve_labs_service
+    
+    service = get_twelve_labs_service()
+    video_path = video_event.video_file_path
+    
+    # Determine if it's a URL or local file
+    is_url = video_path.startswith("http://") or video_path.startswith("https://")
+    
+    # Upload to Twelve Labs
+    if is_url:
+        task_id = await service.upload_video_from_url(video_path)
+    else:
+        if not os.path.exists(video_path):
+            raise Exception(f"Video file not found: {video_path}")
+        task_id = await service.upload_video(video_path)
+    
+    # Wait for indexing
+    task_status = await service.wait_for_task(task_id)
+    video_id = task_status.get("video_id")
+    
+    if not video_id:
+        raise Exception("No video_id returned from Twelve Labs")
+    
+    video_event.twelve_labs_video_id = video_id
+    
+    # Get transcript
+    transcript = await service.get_video_transcription(video_id)
+    if transcript:
+        video_event.transcript = transcript
+    
+    # Get scene description
+    gist = await service.generate_gist(video_id, types=["topic", "title"])
+    if gist:
+        title = gist.get("title", "")
+        topics = gist.get("topics", [])
+        video_event.scene_description = f"{title}. {', '.join(topics)}" if topics else title
+    
+    video_event.processing_status = "completed"
+    db.commit()
+    
+    return {
+        "status": "completed",
+        "video_event_id": str(video_event.video_event_id),
+        "twelve_labs_video_id": video_id
+    }
+
+
+@celery_app.task(name="backend.workers.tasks.reprocess_failed_videos")
+def reprocess_failed_videos():
+    """Retry failed video processing (runs periodically)."""
+    if not settings.enable_video_processing:
+        return {"status": "disabled"}
+    
+    db = SessionLocal()
+    
+    try:
+        cutoff = datetime.utcnow() - timedelta(hours=24)
+        failed = db.query(VideoEvent).filter(
+            VideoEvent.processing_status == "failed",
+            VideoEvent.created_at >= cutoff
+        ).limit(10).all()
+        
+        for video in failed:
+            video.processing_status = "pending"
+            video.processing_error = None
+            db.commit()
+            process_video_chunk.delay(str(video.video_event_id))
+        
+        return {"status": "success", "requeued": len(failed)}
+    
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+    
+    finally:
+        db.close()
 
 
 @celery_app.task(name="backend.workers.tasks.summarize_sessions_task")
