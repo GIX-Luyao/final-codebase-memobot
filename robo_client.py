@@ -3,11 +3,384 @@ import json
 import os
 import sys
 import subprocess
+import asyncio
+import base64
 from dotenv import load_dotenv
 
 # Load env from this repo root explicitly (not cwd-dependent)
 DOTENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path=DOTENV_PATH, override=True)
+
+# Audio constants for Realtime API (24kHz, 16-bit PCM, mono)
+SAMPLE_RATE = 24000
+CHANNELS = 1
+CHUNK_DURATION_MS = 100
+CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
+
+
+class RealtimeAgent:
+    """Agent using OpenAI's Realtime API for audio-to-audio interaction."""
+    
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.ws = None
+        self.audio_queue = asyncio.Queue()
+        self.is_recording = False
+        self.input_stream = None
+        self.output_stream = None
+        self.sd = None  # sounddevice module
+        
+    async def get_ephemeral_token(self):
+        """Get an ephemeral client secret for WebSocket connection."""
+        session_config = {
+            "model": "gpt-4o-realtime-preview-2024-12-17",
+            "voice": "verse",
+            "instructions": "You are a helpful assistant with access to a memory system. When users ask about past events, use the retrieveMemory function to find relevant information. When you are unsure, do not make up information. Keep responses concise for voice interaction.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "retrieveMemory",
+                    "description": "Retrieve past memories based on a natural language query",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "queryText": {
+                                "type": "string",
+                                "description": "The natural language query to search for memories. The query should be specific about the event or item being searched.",
+                            },
+                        },
+                        "required": ["queryText"],
+                    },
+                }
+            ],
+            "tool_choice": "auto",
+            "input_audio_transcription": {
+                "model": "whisper-1"
+            },
+        }
+        
+        response = requests.post(
+            "https://api.openai.com/v1/realtime/sessions",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json=session_config,
+        )
+        
+        if response.status_code != 200:
+            raise Exception(f"Failed to get ephemeral token: {response.status_code} {response.text}")
+        
+        data = response.json()
+        return data["client_secret"]["value"]
+    
+    def retrieve_memory(self, query):
+        """Retrieve memories using the existing pipeline."""
+        twelvelabs_dir = os.path.join(os.path.dirname(__file__), 'examples', 'twelvelabs')
+        venv_python = os.path.join(twelvelabs_dir, 'venv', 'bin', 'python')
+        query_file = os.path.join(twelvelabs_dir, 'query.py')
+        
+        if not os.path.exists(query_file):
+            return {"events": [], "metadata": {"error": "query.py not found"}}
+        
+        if not os.path.exists(venv_python):
+            venv_python = sys.executable
+        
+        try:
+            escaped_query = query.replace('"', '\\"').replace("'", "\\'")
+            
+            result = subprocess.run(
+                [venv_python, '-c', f'''
+import sys
+sys.path.insert(0, "{twelvelabs_dir}")
+try:
+    from query import retrieve_and_rank
+    import json
+    
+    results = retrieve_and_rank(
+        question="""{escaped_query}""",
+        index_name="twelve-labs",
+        top_k=10,
+        alpha=0.5,
+        beta=0.3,
+        gamma=0.2,
+    )
+    
+    events = []
+    for r in results:
+        md = r.get("metadata", {{}})
+        event = {{
+            "id": r["id"],
+            "summary": md.get("summary", ""),
+            "video_file": md.get("video_file", ""),
+            "start_time_sec": md.get("start_time_sec"),
+            "end_time_sec": md.get("end_time_sec"),
+            "timestamp_utc": md.get("timestamp_utc"),
+            "importance_score": md.get("importance_score"),
+            "relevance_score": r["relevance_score"],
+            "final_score": r["final_score"],
+        }}
+        events.append(event)
+    
+    memory_context = {{
+        "events": events,
+        "metadata": {{
+            "total_results": len(events),
+            "query": """{escaped_query}""",
+        }}
+    }}
+    
+    print(json.dumps(memory_context))
+    
+except Exception as e:
+    error_msg = {{
+        "events": [],
+        "metadata": {{"error": f"Error: {{str(e)}}"}}
+    }}
+    print(json.dumps(error_msg))
+'''],
+                capture_output=True,
+                text=True,
+                cwd=twelvelabs_dir
+            )
+            
+            if result.returncode != 0:
+                return {"events": [], "metadata": {"error": result.stderr}}
+            
+            output_lines = result.stdout.strip().split('\n')
+            json_line = output_lines[-1]
+            memory_context = json.loads(json_line)
+            
+            if memory_context.get("events"):
+                print(f"\n📋 Retrieved {len(memory_context['events'])} relevant memories")
+            
+            return memory_context
+            
+        except Exception as e:
+            return {"events": [], "metadata": {"error": str(e)}}
+    
+    async def connect(self):
+        """Connect to the Realtime API via WebSocket."""
+        try:
+            import websockets
+        except ImportError:
+            print("Please install websockets: pip install websockets")
+            sys.exit(1)
+        
+        print("🔑 Getting ephemeral token...")
+        token = await self.get_ephemeral_token()
+        
+        url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "OpenAI-Beta": "realtime=v1",
+        }
+        
+        print("🔌 Connecting to Realtime API...")
+        self.ws = await websockets.connect(url, additional_headers=headers)
+        print("✅ Connected!")
+        
+        return self.ws
+    
+    async def send_audio(self, audio_data: bytes):
+        """Send audio data to the API."""
+        if self.ws:
+            audio_b64 = base64.b64encode(audio_data).decode('utf-8')
+            await self.ws.send(json.dumps({
+                "type": "input_audio_buffer.append",
+                "audio": audio_b64,
+            }))
+    
+    async def commit_audio(self):
+        """Commit the audio buffer and request a response."""
+        if self.ws:
+            await self.ws.send(json.dumps({
+                "type": "input_audio_buffer.commit",
+            }))
+            await self.ws.send(json.dumps({
+                "type": "response.create",
+            }))
+    
+    async def handle_function_call(self, call_id: str, name: str, arguments: str):
+        """Handle function calls from the API."""
+        try:
+            args = json.loads(arguments)
+            
+            if name == "retrieveMemory":
+                print(f"\n🔍 Searching memories for: {args.get('queryText', '')}")
+                result = self.retrieve_memory(args.get("queryText", ""))
+                
+                await self.ws.send(json.dumps({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": json.dumps(result),
+                    }
+                }))
+                
+                await self.ws.send(json.dumps({
+                    "type": "response.create",
+                }))
+                
+        except Exception as e:
+            print(f"Error handling function call: {e}")
+    
+    async def receive_messages(self):
+        """Receive and process messages from the API."""
+        try:
+            import sounddevice as sd
+            import numpy as np
+            self.sd = sd
+        except ImportError:
+            print("Please install sounddevice and numpy: pip install sounddevice numpy")
+            sys.exit(1)
+        
+        # Create output stream for playback
+        self.output_stream = sd.OutputStream(
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype='int16',
+            blocksize=CHUNK_SIZE,
+        )
+        self.output_stream.start()
+        
+        try:
+            async for message in self.ws:
+                event = json.loads(message)
+                event_type = event.get("type", "")
+                
+                if event_type == "session.created":
+                    print("🎙️  Session started. Speak into your microphone...")
+                    print("    Press Ctrl+C to stop.\n")
+                
+                elif event_type == "input_audio_buffer.speech_started":
+                    print("🎤 Speech detected...")
+                
+                elif event_type == "input_audio_buffer.speech_stopped":
+                    print("🛑 Speech ended, processing...")
+                
+                elif event_type == "conversation.item.input_audio_transcription.completed":
+                    transcript = event.get("transcript", "")
+                    if transcript:
+                        print(f"\n[You] {transcript}")
+                
+                elif event_type == "response.audio.delta":
+                    audio_b64 = event.get("delta", "")
+                    if audio_b64:
+                        audio_data = base64.b64decode(audio_b64)
+                        # Convert bytes to numpy array for sounddevice
+                        audio_array = np.frombuffer(audio_data, dtype=np.int16)
+                        self.output_stream.write(audio_array)
+                
+                elif event_type == "response.audio_transcript.delta":
+                    transcript = event.get("delta", "")
+                    if transcript:
+                        print(transcript, end="", flush=True)
+                
+                elif event_type == "response.audio_transcript.done":
+                    print()  # New line after transcript
+                
+                elif event_type == "response.function_call_arguments.done":
+                    call_id = event.get("call_id", "")
+                    name = event.get("name", "")
+                    arguments = event.get("arguments", "{}")
+                    await self.handle_function_call(call_id, name, arguments)
+                
+                elif event_type == "response.done":
+                    response = event.get("response", {})
+                    if response.get("status") == "failed":
+                        error = response.get("status_details", {}).get("error", {})
+                        print(f"\n❌ Error: {error.get('message', 'Unknown error')}")
+                
+                elif event_type == "error":
+                    error = event.get("error", {})
+                    print(f"\n❌ API Error: {error.get('message', 'Unknown error')}")
+                    
+        except Exception as e:
+            print(f"\nConnection error: {e}")
+    
+    async def capture_audio(self):
+        """Capture audio from microphone and send to API."""
+        try:
+            import sounddevice as sd
+            import numpy as np
+            self.sd = sd
+        except ImportError:
+            print("Please install sounddevice and numpy: pip install sounddevice numpy")
+            sys.exit(1)
+        
+        self.is_recording = True
+        loop = asyncio.get_event_loop()
+        
+        def audio_callback(indata, frames, time_info, status):
+            """Called for each audio block from the microphone."""
+            if status:
+                print(f"Audio status: {status}")
+            if self.is_recording:
+                # Convert numpy array to bytes
+                audio_bytes = indata.tobytes()
+                # Schedule coroutine on the event loop
+                asyncio.run_coroutine_threadsafe(self.send_audio(audio_bytes), loop)
+        
+        try:
+            # Open input stream with callback
+            self.input_stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype='int16',
+                blocksize=CHUNK_SIZE,
+                callback=audio_callback,
+            )
+            self.input_stream.start()
+            
+            # Keep running while recording
+            while self.is_recording:
+                await asyncio.sleep(0.1)
+                
+        except Exception as e:
+            print(f"Audio capture error: {e}")
+        finally:
+            if self.input_stream:
+                self.input_stream.stop()
+                self.input_stream.close()
+    
+    async def run(self):
+        """Main run loop for the realtime agent."""
+        try:
+            await self.connect()
+            
+            # Run audio capture and message receiving concurrently
+            await asyncio.gather(
+                self.capture_audio(),
+                self.receive_messages(),
+            )
+            
+        except KeyboardInterrupt:
+            print("\n\n👋 Goodbye!")
+        except Exception as e:
+            print(f"Error: {e}")
+        finally:
+            self.cleanup()
+    
+    def cleanup(self):
+        """Clean up resources."""
+        self.is_recording = False
+        
+        if self.input_stream:
+            try:
+                self.input_stream.stop()
+                self.input_stream.close()
+            except:
+                pass
+        
+        if self.output_stream:
+            try:
+                self.output_stream.stop()
+                self.output_stream.close()
+            except:
+                pass
+
 
 class Agent:
     def __init__(self, api_key, memobot_api_url="http://localhost:8000"):
@@ -323,8 +696,36 @@ except Exception as e:
             return error_message
 
 
-# Example usage
-if __name__ == "__main__":
+def run_realtime_mode():
+    """Run the agent in realtime audio mode."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("\nERROR: OPENAI_API_KEY is not set.")
+        print(f"Looked for .env at: {DOTENV_PATH}")
+        print("\nAdd to .env:")
+        print("  OPENAI_API_KEY=sk-...")
+        sys.exit(1)
+    
+    if not api_key.startswith("sk-"):
+        print("\nERROR: OPENAI_API_KEY does not look like an OpenAI key.")
+        sys.exit(1)
+    
+    print("\n🎙️  Memobot Realtime Audio Mode")
+    print("=" * 40)
+    print("This mode uses OpenAI's Realtime API for")
+    print("voice-to-voice conversation with memory access.")
+    print("\nRequirements:")
+    print("  - sounddevice (pip install sounddevice)")
+    print("  - numpy (pip install numpy)")
+    print("  - websockets (pip install websockets)")
+    print("=" * 40)
+    
+    agent = RealtimeAgent(api_key)
+    asyncio.run(agent.run())
+
+
+def run_text_mode():
+    """Run the agent in text mode (original behavior)."""
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         print("\nERROR: OPENROUTER_API_KEY is not set.")
@@ -333,7 +734,6 @@ if __name__ == "__main__":
         print("  OPENROUTER_API_KEY=sk-or-v1-...")
         sys.exit(1)
 
-    # Quick format sanity check (doesn't guarantee validity, but catches obvious mistakes)
     if not api_key.startswith("sk-or-"):
         print("\nERROR: OPENROUTER_API_KEY does not look like an OpenRouter key (expected prefix sk-or-).")
         sys.exit(1)
@@ -341,7 +741,6 @@ if __name__ == "__main__":
     memobot_url = os.environ.get("MEMOBOT_API_URL", "http://localhost:8000")
     agent = Agent(api_key, memobot_api_url=memobot_url)
 
-    # Fail fast if the key/account is invalid
     if not agent._validate_openrouter_key():
         print("\nERROR: OpenRouter rejected this API key.")
         print("Fix: generate a new key at https://openrouter.ai/keys and update OPENROUTER_API_KEY.")
@@ -383,7 +782,7 @@ if __name__ == "__main__":
                 print()
                 continue
             
-            print()  # Empty line for spacing
+            print()
             response = agent.chat(user_input)
             print(f"\n[Agent] {response}\n")
             
@@ -393,3 +792,22 @@ if __name__ == "__main__":
         except EOFError:
             print("\n\nGoodbye!")
             break
+
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Memobot - AI assistant with memory")
+    parser.add_argument(
+        "--mode", 
+        choices=["text", "realtime", "audio"],
+        default="text",
+        help="Interaction mode: 'text' for chat, 'realtime' or 'audio' for voice"
+    )
+    
+    args = parser.parse_args()
+    
+    if args.mode in ["realtime", "audio"]:
+        run_realtime_mode()
+    else:
+        run_text_mode()
