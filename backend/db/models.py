@@ -33,6 +33,41 @@ class Event(Base):
     )
 
 
+class VideoEvent(Base):
+    """Video event model - stores video clips processed by Twelve Labs."""
+    
+    __tablename__ = "video_events"
+    
+    video_event_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    robot_id = Column(String(255), nullable=False, index=True)
+    user_id = Column(String(255), nullable=True, index=True)
+    session_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    
+    # Timing
+    start_timestamp = Column(DateTime(timezone=True), nullable=False)
+    end_timestamp = Column(DateTime(timezone=True), nullable=False)
+    duration_seconds = Column(Float, nullable=False)
+    
+    # Storage references
+    video_file_path = Column(String(512), nullable=True)  # Local path or URL
+    twelve_labs_video_id = Column(String(255), nullable=True, index=True)  # Video ID in Twelve Labs
+    
+    # Extracted content (from Twelve Labs)
+    transcript = Column(Text, nullable=True)  # Speech-to-text
+    scene_description = Column(Text, nullable=True)  # Generated description
+    
+    # Status
+    processing_status = Column(String(50), default='pending')  # pending, processing, completed, failed
+    processing_error = Column(Text, nullable=True)
+    metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    __table_args__ = (
+        Index('idx_video_robot_timestamp', 'robot_id', 'start_timestamp'),
+        Index('idx_video_processing_status', 'processing_status'),
+    )
+
+
 class Session(Base):
     """Session model - groups related events into conversations/interactions."""
     
