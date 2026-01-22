@@ -5,6 +5,7 @@
 
 # twelvelabs raw data
 twelvelabs/raw_data/
+examples/twelvelabs/raw_data/
 
 # macOS
 .DS_Store
@@ -26,4 +27,8 @@ ENV/
 *.swp
 *.swo
 *~
+
+# Explicitly track these directories (do not ignore)
+!ingest_pipeline/talknet/demo/
+!**/pyframes/
 

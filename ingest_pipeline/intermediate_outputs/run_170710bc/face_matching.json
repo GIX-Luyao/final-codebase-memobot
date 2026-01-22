@@ -1,0 +1,50 @@
+{
+  "t17265_face_00_red": {
+    "face_id": "person_2",
+    "distance": 0.036580324173937084
+  },
+  "t17265_face_01_red": {
+    "face_id": "person_1",
+    "distance": 0.2808747458986527
+  },
+  "t19905_face_00_red": {
+    "face_id": "person_2",
+    "distance": 0.02642792463399979
+  },
+  "t19905_face_01_green": {
+    "face_id": "person_1",
+    "distance": 0.26769548654629516
+  },
+  "t19905_speaker": {
+    "face_id": "person_1",
+    "distance": 0.26769548654629516
+  },
+  "t21365_face_00_red": {
+    "face_id": "person_2",
+    "distance": 0.024752020836851796
+  },
+  "t21365_face_01_green": {
+    "face_id": "person_1",
+    "distance": 0.46200621128136077
+  },
+  "t21365_speaker": {
+    "face_id": "person_1",
+    "distance": 0.46200621128136077
+  },
+  "t22485_face_00_green": {
+    "face_id": "person_2",
+    "distance": 0.4058678150182944
+  },
+  "t22485_speaker": {
+    "face_id": "person_2",
+    "distance": 0.4058678150182944
+  },
+  "t23925_face_00_red": {
+    "face_id": "person_1",
+    "distance": 0.3702240586287121
+  },
+  "t26845_face_00_red": {
+    "face_id": "person_1",
+    "distance": 0.4285290837293618
+  }
+}

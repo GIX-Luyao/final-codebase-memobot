@@ -1,0 +1,110 @@
+[
+  {
+    "speaker_id": "SPEAKER_00",
+    "face_id": null,
+    "text": "Marie.",
+    "start": 1.185,
+    "end": 1.585,
+    "timestamp_processed": 0.9850000000000001,
+    "match_distance": null
+  },
+  {
+    "speaker_id": "SPEAKER_00",
+    "face_id": null,
+    "text": "This is Ms. Novak.",
+    "start": 2.225,
+    "end": 3.205,
+    "timestamp_processed": 2.025,
+    "match_distance": null
+  },
+  {
+    "speaker_id": "SPEAKER_00",
+    "face_id": null,
+    "text": "She's from Chicago.",
+    "start": 3.905,
+    "end": 5.045,
+    "timestamp_processed": 3.7049999999999996,
+    "match_distance": null
+  },
+  {
+    "speaker_id": "SPEAKER_00",
+    "face_id": null,
+    "text": "Marie is our receptionist.",
+    "start": 5.485,
+    "end": 6.805,
+    "timestamp_processed": 5.285,
+    "match_distance": null
+  },
+  {
+    "speaker_id": "SPEAKER_01",
+    "face_id": null,
+    "text": "It's nice to meet you. It's nice to meet you too.",
+    "start": 7.045,
+    "end": 9.425,
+    "timestamp_processed": 6.845,
+    "match_distance": null
+  },
+  {
+    "speaker_id": "SPEAKER_00",
+    "face_id": null,
+    "text": "I'll get your tickets.",
+    "start": 9.485,
+    "end": 10.505,
+    "timestamp_processed": 9.285,
+    "match_distance": null
+  },
+  {
+    "speaker_id": "SPEAKER_01",
+    "face_id": "person_2",
+    "text": "You look very familiar to me, Marie.",
+    "start": 17.465,
+    "end": 19.665,
+    "timestamp_processed": 17.265,
+    "match_distance": 0.036580324173937084
+  },
+  {
+    "speaker_id": "SPEAKER_01",
+    "face_id": "person_1",
+    "text": "Have we met before?",
+    "start": 20.105,
+    "end": 21.145,
+    "timestamp_processed": 19.905,
+    "match_distance": 0.26769548654629516
+  },
+  {
+    "speaker_id": "SPEAKER_00",
+    "face_id": "person_1",
+    "text": "I don't think so.",
+    "start": 21.565,
+    "end": 22.685,
+    "timestamp_processed": 21.365000000000002,
+    "match_distance": 0.46200621128136077
+  },
+  {
+    "speaker_id": "SPEAKER_01",
+    "face_id": "person_2",
+    "text": "No.",
+    "start": 22.685,
+    "end": 23.285,
+    "timestamp_processed": 22.485,
+    "match_distance": 0.4058678150182944
+  },
+  {
+    "speaker_id": "SPEAKER_01",
+    "face_id": "person_1",
+    "text": "Well, I never forget a face.",
+    "start": 24.125,
+    "end": 26.065,
+    "timestamp_processed": 23.925,
+    "match_distance": 0.3702240586287121
+  },
+  {
+    "speaker_id": "SPEAKER_01",
+    "face_id": "person_1",
+    "text": "I'm sure I know you from somewhere.",
+    "start": 27.045,
+    "end": 29.325,
+    "timestamp_processed": 26.845000000000002,
+    "match_distance": 0.4285290837293618
+  }
+]
