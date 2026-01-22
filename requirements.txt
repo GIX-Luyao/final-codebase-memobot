@@ -43,6 +43,28 @@ pytest-asyncio==0.21.1
 # Monitoring
 prometheus-client==0.19.0
 
+# Speaker diarization
+pyannote.audio
+
+opencv-python 
+numpy
+
+python_speech_features
+scenedetect
+gdown
+
+deepface
+pandas
+
+# TensorFlow and dependencies (macOS compatible versions)
+tensorflow==2.19.0
+tensorflow-metal
+pyarrow==17.0.0
+
+tf-keras
+
+
+# Note: Python 3.12.11 is required
 # Graph Database (optional, for future entity/relation storage)
 # neo4j==5.14.0
 
