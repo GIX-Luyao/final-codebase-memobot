@@ -9,12 +9,29 @@ class Agent:
         self.memory_storage = memory_storage
         self.api_key = api_key
         self.api_url = "https://openrouter.ai/api/v1/chat/completions"
+        self.conversation_history = [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant with access to a memory system. When users ask about past events, use the retrieveMemory function to find relevant information.",
+            }
+        ]
 
+    # TODO: wire this to call memobot api
     def retrieve_memory(self, query):
         print(f'[Memory API] Retrieving memory for query: "{query}"')
         memory_context = self.memory_storage.search_memory(query_text=query)
         print(f'[Memory API] Found {len(memory_context["events"])} relevant memory(ies)')
         return memory_context
+
+    def reset_conversation(self):
+        """Reset the conversation history to start fresh."""
+        print('[Agent] Resetting conversation history')
+        self.conversation_history = [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant with access to a memory system. When users ask about past events, use the retrieveMemory function to find relevant information.",
+            }
+        ]
 
     def chat(self, user_query):
         print(f'[Agent] Received user query: "{user_query}"')
@@ -38,16 +55,11 @@ class Agent:
             }
         ]
 
-        messages = [
-            {
-                "role": "system",
-                "content": "You are a helpful assistant with access to a memory system. When users ask about past events, use the retrieveMemory function to find relevant information.",
-            },
-            {
-                "role": "user",
-                "content": user_query,
-            },
-        ]
+        # Add user message to conversation history
+        self.conversation_history.append({
+            "role": "user",
+            "content": user_query,
+        })
 
         try:
             print(f'[Agent] Calling GPT API with tools...')
@@ -60,7 +72,7 @@ class Agent:
                 },
                 data=json.dumps({
                     "model": "openai/gpt-4o-mini",
-                    "messages": messages,
+                    "messages": self.conversation_history,
                     "tools": tools,
                     "tool_choice": "auto",
                 }),
@@ -85,9 +97,9 @@ class Agent:
                     print(f'[Agent] Memory context retrieved:')
                     print(json.dumps(memory_context, indent=2))
 
-                    # Add the function result to messages
-                    messages.append(assistant_message)
-                    messages.append({
+                    # Add the function result to conversation history
+                    self.conversation_history.append(assistant_message)
+                    self.conversation_history.append({
                         "role": "tool",
                         "tool_call_id": tool_call["id"],
                         "content": json.dumps(memory_context),
@@ -103,19 +115,38 @@ class Agent:
                         },
                         data=json.dumps({
                             "model": "openai/gpt-4o-mini",
-                            "messages": messages,
+                            "messages": self.conversation_history,
                         }),
                     )
 
                     final_data = final_response.json()
+                    final_message = final_data["choices"][0]["message"]["content"]
                     print(f'[Agent] Final response generated')
-                    return final_data["choices"][0]["message"]["content"]
+                    
+                    # Add assistant's final response to history
+                    self.conversation_history.append({
+                        "role": "assistant",
+                        "content": final_message,
+                    })
+                    
+                    return final_message
 
-            return assistant_message.get("content", "")
+            # If no tool call, add assistant message to history and return
+            content = assistant_message.get("content", "")
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": content,
+            })
+            return content
 
         except Exception as error:
             print(f"[Agent] Error calling OpenRouter API: {error}")
-            return "Sorry, I encountered an error while processing your request."
+            error_message = "Sorry, I encountered an error while processing your request."
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": error_message,
+            })
+            return error_message
 
 
 # Example usage
@@ -124,13 +155,37 @@ if __name__ == "__main__":
     print("Starting Memobot Agent Test")
     print("=" * 60)
     
-    api_key = os.environ.get("OPENROUTER_API_KEY")
+    api_key = os.environ.get("OPENROUTER_API_KEY", "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")
     agent = Agent(mock_memory_storage, api_key)
 
-    user_query = "Where did I put my keys?"
-    print(f"\n[User] {user_query}\n")
-
-    response = agent.chat(user_query)
-    print(f"\n[Agent Response] {response}\n")
+    print("\nWelcome to Memobot! Type 'exit' or 'quit' to end the conversation.")
+    print("Type 'reset' to start a new conversation.\n")
+    
+    while True:
+        try:
+            user_input = input("[You] ").strip()
+            
+            if not user_input:
+                continue
+                
+            if user_input.lower() in ['exit', 'quit']:
+                print("\nGoodbye!")
+                break
+                
+            if user_input.lower() == 'reset':
+                agent.reset_conversation()
+                print("\nConversation reset. Starting fresh!\n")
+                continue
+            
+            print()  # Empty line for spacing
+            response = agent.chat(user_input)
+            print(f"\n[Agent] {response}\n")
+            
+        except KeyboardInterrupt:
+            print("\n\nGoodbye!")
+            break
+        except EOFError:
+            print("\n\nGoodbye!")
+            break
     
     print("=" * 60)
