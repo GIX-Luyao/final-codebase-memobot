@@ -20,6 +20,7 @@ import sys
 import uuid
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import json
@@ -183,6 +184,9 @@ def match_faces_to_database(
     results = {}
     
     # Save each crop temporarily and match
+    total_start_time = time.time()
+    print(f"[Timing] Total face matching started at {time.strftime('%H:%M:%S', time.localtime(total_start_time))} for {len(face_crops)} faces")
+    
     with tempfile.TemporaryDirectory() as td:
         for face_label, crop in face_crops:
             temp_path = Path(td) / f"{face_label}.jpg"
@@ -200,6 +204,11 @@ def match_faces_to_database(
             
             results[face_label] = (face_id, distance)
             print(f"[Match] {face_label} -> {face_id} (distance={distance})")
+    
+    total_end_time = time.time()
+    total_elapsed = total_end_time - total_start_time
+    print(f"[Timing] Total face matching ended at {time.strftime('%H:%M:%S', time.localtime(total_end_time))}")
+    print(f"[Timing] Total time for {len(face_crops)} face recognitions: {total_elapsed:.3f}s (avg: {total_elapsed/len(face_crops):.3f}s per face)")
     
     return results
 

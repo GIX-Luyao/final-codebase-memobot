@@ -63,6 +63,7 @@ pyarrow==17.0.0
 
 tf-keras
 
+pyaudio
 
 # Note: Python 3.12.11 is required
 # Graph Database (optional, for future entity/relation storage)
