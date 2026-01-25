@@ -28,6 +28,7 @@ ENV/
 *.swo
 *~
 
+
 # Explicitly track these directories (do not ignore)
 !ingest_pipeline/talknet/demo/
 !**/pyframes/

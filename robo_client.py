@@ -177,7 +177,7 @@ except Exception as e:
         }
         
         print("🔌 Connecting to Realtime API...")
-        self.ws = await websockets.connect(url, additional_headers=headers)
+        self.ws = await websockets.connect(url, extra_headers=headers)
         print("✅ Connected!")
         
         return self.ws

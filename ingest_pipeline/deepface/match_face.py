@@ -19,6 +19,7 @@ Usage:
 import os
 import argparse
 import pickle
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -223,6 +224,9 @@ def match_query_to_db(
     """
     Returns (best_person_id, best_db_image_path, best_distance)
     """
+    start_time = time.time()
+    print(f"[Timing] Face recognition started at {time.strftime('%H:%M:%S', time.localtime(start_time))} for {query_img.name}")
+    
     q_emb = get_embedding(
         img_path=query_img,
         model_name=model_name,
@@ -231,6 +235,9 @@ def match_query_to_db(
         align=align,
     )
     if q_emb is None:
+        end_time = time.time()
+        elapsed = end_time - start_time
+        print(f"[Timing] Face recognition ended at {time.strftime('%H:%M:%S', time.localtime(end_time))} for {query_img.name} (no face detected, took {elapsed:.3f}s)")
         return None, None, None
 
     if distance_metric == "cosine":
@@ -257,6 +264,10 @@ def match_query_to_db(
             best_pid = pid
             best_db_img = info["db_image"]
 
+    end_time = time.time()
+    elapsed = end_time - start_time
+    print(f"[Timing] Face recognition ended at {time.strftime('%H:%M:%S', time.localtime(end_time))} for {query_img.name} (took {elapsed:.3f}s)")
+    
     return best_pid, best_db_img, best_dist
 
 
@@ -316,6 +327,9 @@ def main():
     print(f"[Info] cache={cache_path.resolve()}")
 
     rows = []
+    total_start_time = time.time()
+    print(f"[Timing] Total face recognition process started at {time.strftime('%H:%M:%S', time.localtime(total_start_time))}")
+    
     for qi in query_images:
         pid, db_img, dist = match_query_to_db(
             query_img=qi,
@@ -337,6 +351,11 @@ def main():
 
         print(f"[Match] {qi.name} -> {pid} (dist={dist})")
 
+    total_end_time = time.time()
+    total_elapsed = total_end_time - total_start_time
+    print(f"[Timing] Total face recognition process ended at {time.strftime('%H:%M:%S', time.localtime(total_end_time))}")
+    print(f"[Timing] Total time for {len(query_images)} face recognitions: {total_elapsed:.3f}s (avg: {total_elapsed/len(query_images):.3f}s per face)")
+    
     pd.DataFrame(rows).to_csv(out_csv, index=False)
     print(f"[Done] Wrote: {out_csv.resolve()}")
 
