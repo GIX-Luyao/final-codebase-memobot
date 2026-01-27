@@ -1,2 +1,0 @@
-"""Example usage of MemoBot."""
-

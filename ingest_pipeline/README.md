@@ -52,7 +52,7 @@ The pipeline executes the following steps:
   - The video should contain audio for speaker diarization
 
 ### Face Database
-- **Face images**: Place reference face images in the `face_database/` directory
+- **Face images**: Place reference face images in the `face_database/` directory (at project root)
   - Supported formats: JPG, PNG
   - Naming convention: `person_0.png`, `person_1.png`, `person_2.png`, etc.
   - Face IDs are derived from the filename (without extension)
@@ -137,8 +137,8 @@ Default configuration (can be modified in `ingest_pipeline.py`):
 - `FACE_MODEL = "ArcFace"`: Face recognition model
 - `FACE_DETECTOR = "opencv"`: Face detection backend
 - `FACE_DISTANCE_METRIC = "cosine"`: Distance metric for face matching
-- `DATA_DIR`: Directory containing input videos (default: `data/`)
-- `FACE_DB_DIR`: Directory containing face database images (default: `face_database/`)
+- `DATA_DIR`: Directory containing input videos (default: `data/` within ingest_pipeline)
+- `FACE_DB_DIR`: Directory containing face database images (default: `face_database/` at project root)
 
 ## Dependencies
 
@@ -154,7 +154,7 @@ The pipeline requires:
 ## Notes
 
 - The pipeline processes each unique speaker turn start timestamp (deduplicates if multiple turns start at the same time)
-- Face matching uses cached embeddings stored in `deepface/db_embeddings.pkl` for faster processing
+- Face matching uses cached embeddings stored in `deepface/db_embeddings.pkl` (at project root) for faster processing
 - If no faces are detected or matched, `face_id` will be `null` in the results
 - TalkNet may take some time to process the video on first run (it processes the entire video)
 - Subsequent runs for the same video will be faster if TalkNet outputs are cached
