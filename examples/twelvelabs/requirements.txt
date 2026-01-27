@@ -1,4 +1,0 @@
-twelvelabs
-pinecone
-av
-python-dotenv
