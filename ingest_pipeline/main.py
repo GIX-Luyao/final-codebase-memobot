@@ -13,6 +13,8 @@ import os
 import json
 import shutil
 import sys
+import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Ensure ingest_pipeline is on path
@@ -20,6 +22,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from process_video import process_video, DATA_DIR
 from vector_db import ingest_data
+
+# Allow importing from root directory (for Memobot package)
+sys.path.insert(0, str(Path(__file__).parent.parent))
+try:
+    from Memobot import MemobotService
+except ImportError:
+    print("[Warning] Memobot package not found. Knowledge Graph ingestion will be skipped.")
+    MemobotService = None
 
 # Default Pinecone index and clip length (one embedding per 30s clip)
 DEFAULT_INDEX_NAME = "twelve-labs"
@@ -40,11 +50,12 @@ def _videos_in_data_dir() -> list[Path]:
     return sorted(out)
 
 
-def _process_one_video(
+async def _process_one_video(
     video_path: Path,
     video_filename: str,
     index_name: str,
     clip_length: int,
+    memobot_service: MemobotService = None,
 ) -> dict:
     video_path_str = str(video_path.resolve())
     print("=" * 60)
@@ -63,14 +74,58 @@ def _process_one_video(
         process_video_results=results,
     )
     print("\nIngest complete.")
+
     return ingest_result
 
 
-def main():
+async def ingest_to_graph(final_outputs: list[dict], memobot_service: MemobotService):
+    """
+    Reformat final_outputs and build the knowledge graph.
+    """
+    if not memobot_service or not final_outputs:
+        return
+
+    print("\n" + "=" * 60)
+    print("Step 3: Building Knowledge Graph from Final Outputs")
+    print("=" * 60)
+
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    for item in final_outputs:
+        pid = item.get("person_id")
+        name = item.get("name")
+        text_content = item.get("audio_dialogue") or item.get("clip_summary")
+
+        input_data = {
+            "id": f"log_{int(datetime.now().timestamp())}_{pid}",
+            "person_name": name,
+            "person_id": pid,
+            "text": text_content,
+            "robot_pos_list": [],  # No robot position data available
+            "timestamp": timestamp,
+        }
+
+        try:
+            await memobot_service.build(input_data)
+            print(f"[OK] Knowledge graph built successfully for {name} ({pid})")
+        except Exception as e:
+            print(f"[ERROR] Failed to build knowledge graph for {name}: {e}")
+
+
+async def main_async():
     # Optional args: [video_path_or_filename] [index_name] [clip_length_sec]
     index_name = DEFAULT_INDEX_NAME
     clip_length = DEFAULT_CLIP_LENGTH
     videos_to_process: list[tuple[Path, str]] = []  # (path, filename for process_video)
+
+    # Initialize MemobotService
+    memobot_service = None
+    if MemobotService:
+        try:
+            memobot_service = MemobotService.from_env(group_id='tenant_001')
+            print("[Info] MemobotService initialized")
+        except Exception as e:
+            print(f"[Warning] Failed to initialize MemobotService: {e}")
 
     if len(sys.argv) >= 2:
         # Explicit video: path or filename under data/
@@ -120,7 +175,7 @@ def main():
 
     for video_path, video_filename in videos_to_process:
         print(f"\n>>> Processing: {video_path.name}")
-        ingest_result = _process_one_video(video_path, video_filename, index_name, clip_length)
+        ingest_result = await _process_one_video(video_path, video_filename, index_name, clip_length, memobot_service)
 
         # Per your request: output {person_id, name, clip_summary}.
         clip_summary = ingest_result.get("summary")
@@ -138,10 +193,21 @@ def main():
                     }
                 )
 
+    # Step 3: Build Knowledge Graph using final_outputs
+    await ingest_to_graph(final_outputs, memobot_service)
+
     print("\n" + "=" * 60)
     print("FINAL JSON OUTPUT")
     print("=" * 60)
     print(json.dumps(final_outputs, indent=2))
+    
+    # Note: memobot_service.close() is NOT called here anymore.
+    # It should be managed by the caller of main_async if needed, 
+    # or left open for the duration of the agent process.
+
+
+def main():
+    asyncio.run(main_async())
 
 
 if __name__ == "__main__":
