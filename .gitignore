@@ -28,6 +28,9 @@ ENV/
 *.swo
 *~
 
+# Generated pipeline artifacts
+**/intermediate_outputs/
+
 
 # Explicitly track these directories (do not ignore)
 !ingest_pipeline/talknet/demo/

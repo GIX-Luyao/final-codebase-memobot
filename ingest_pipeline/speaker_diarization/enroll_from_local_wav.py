@@ -12,17 +12,20 @@ from dotenv import load_dotenv
 # Config
 # ----------------------------
 
+# Memobot repo root (ingest_pipeline/speaker_diarization -> parent.parent.parent)
+MEMOBOT_ROOT = Path(__file__).resolve().parent.parent.parent
 
-load_dotenv()
+# Load .env from memobot root
+load_dotenv(dotenv_path=MEMOBOT_ROOT / ".env")
 PYANNOTE_API_KEY = os.getenv("PYANNOTE_API_KEY")
 if not PYANNOTE_API_KEY:
     raise RuntimeError("Set env var PYANNOTE_API_KEY")
-
 DATA_DIR = Path("./data")
 STATE_DIR = Path("./state")
 STATE_DIR.mkdir(exist_ok=True)
 
-VOICEPRINTS_PATH = STATE_DIR / "voiceprints.json"
+# Voiceprints stored at memobot root so they are shared across pipelines
+VOICEPRINTS_PATH = MEMOBOT_ROOT / "voiceprints.json"
 
 # pyannoteAI endpoints
 MEDIA_INPUT = "https://api.pyannote.ai/v1/media/input"     # presigned PUT for media://...
@@ -258,6 +261,68 @@ def create_voiceprint_from_clip(clip_media_url: str) -> str:
     if not vp:
         raise RuntimeError("Voiceprint job succeeded but output.voiceprint missing")
     return vp
+
+
+def enroll_speakers_from_turns(turns: List[dict], local_wav_16k_path: str, source_file: str = "") -> Dict[str, str]:
+    """
+    Enroll speakers from diarization turns.
+    
+    Args:
+        turns: List of speaker turn dicts from speech_to_text_diarization
+        local_wav_16k_path: Path to the 16k mono WAV file
+        source_file: Optional source file identifier for tracking
+    
+    Returns:
+        Dict mapping diarization speaker IDs (e.g., "SPEAKER_00") to voiceprint labels (e.g., "person_xxx")
+    """
+    voiceprints = load_voiceprints()
+    diar_speakers = sorted({t["speaker"] for t in turns})
+    speaker_to_identity: Dict[str, str] = {}
+    
+    for spk in diar_speakers:
+        print(f"\n[Enroll] Processing {spk}...")
+        
+        # Build single-speaker clip from turns
+        try:
+            clip_bytes = build_single_speaker_clip_bytes(local_wav_16k_path, turns, spk)
+        except Exception as e:
+            print(f"[Enroll] Cannot build clip for {spk}: {e}")
+            speaker_to_identity[spk] = "UNKNOWN"
+            continue
+        
+        # Upload speaker clip to media://
+        clip_key = f"clips/{uuid.uuid4().hex}_{spk}.wav"
+        clip_media_url = upload_local_wav_to_media(clip_bytes, clip_key)
+        
+        # Identify against existing voiceprints
+        match_result = identify_clip(clip_media_url, voiceprints)
+        if match_result:
+            match_label, confidence = match_result
+            print(f"[Enroll] {spk} -> {match_label} (confidence: {confidence:.1f})")
+            speaker_to_identity[spk] = match_label
+            continue
+        else:
+            print(f"[Enroll] {spk} match below threshold ({MIN_CONFIDENCE_SCORE:.1f}), creating new speaker")
+        
+        # No match => enroll new voiceprint
+        new_label = f"person_{uuid.uuid4().hex[:8]}"
+        print(f"[Enroll] {spk} not identified -> creating new voiceprint '{new_label}'")
+        
+        vp_str = create_voiceprint_from_clip(clip_media_url)
+        voiceprints[new_label] = {
+            "label": new_label,
+            "voiceprint": vp_str,
+            "created_from": {
+                "source_file": source_file,
+                "diarization_speaker": spk,
+            },
+        }
+        save_voiceprints(voiceprints)
+        print(f"[Enroll] Saved voiceprint '{new_label}'")
+        
+        speaker_to_identity[spk] = new_label
+    
+    return speaker_to_identity
 
 
 # ----------------------------
