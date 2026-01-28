@@ -64,7 +64,7 @@ except ImportError as e:
     raise
 
 # Import face matching functions
-sys.path.insert(0, str(Path(__file__).parent / "deepface"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "deepface"))
 from match_face import (
     set_mac_stability_env,
     list_images,
@@ -80,7 +80,7 @@ if not PYANNOTE_API_KEY:
 
 # Configuration
 DATA_DIR = Path(__file__).parent / "data"
-FACE_DB_DIR = Path(__file__).parent / "face_database"
+FACE_DB_DIR = Path(__file__).parent.parent / "face_database"
 TALKNET_REPO = Path(__file__).parent / "talknet"
 INTERMEDIATE_OUTPUTS_DIR = Path(__file__).parent / "intermediate_outputs"
 BUFFER_SEC = 0.2  # Buffer to add before speaker turn start
@@ -89,7 +89,7 @@ BUFFER_SEC = 0.2  # Buffer to add before speaker turn start
 FACE_MODEL = "ArcFace"
 FACE_DETECTOR = "opencv"
 FACE_DISTANCE_METRIC = "cosine"
-FACE_CACHE_PATH = Path(__file__).parent / "deepface" / "db_embeddings.pkl"
+FACE_CACHE_PATH = Path(__file__).parent.parent / "deepface" / "db_embeddings.pkl"
 
 
 def extract_audio_from_video(video_path: Path, output_wav: Path) -> None:
