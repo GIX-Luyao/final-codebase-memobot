@@ -1,0 +1,10 @@
+{
+  "person_89a155b3": {
+    "label": "person_89a155b3",
+    "voiceprint": "ZldrvghKULzk8dY9HjHdvYRvKT5XMh4+WPsOveQDtj7AmhG+5nGqPRDmQz+I5p8+z68CPl2bBD5Yw5Y8OPLCPdtmZ77cpCW/SM7cu6w0Aj5Kpom+5suqvvDm+byyA/6+QSZyPqhwTL4KgC8/6osJvxDPtL4rViA+phSWPoWEg70uBsq9aL3KPJ89Eb0tGTU+keKKPiruN7/ztZU+XpXHvcjigb1JKhE+nLzKPicERT2Ofg2+Sq9IPkOC7T1+Q/i+1FNlPcDwCrt16uY9TUcnPmOogT5txxK/tt0BvzDRA72CR4G+b+DAvrHR1L2WbIk+jhHpPhmDzr03wQe/JCX2vqS10b7ujck+VJmnvrURoj759cM+c9U9vrqqu75fgsk9Ts/8PTqjBT+skI8+1dkCPoPthD602o4+Pg58vkCQMrrJPic+iLjGvqT8AT7Uo9+9QnRQvtR4Ez+YBbq+aJADPqpwib4Bn2M+YPsWvpdDqb4qth8+gMwPvf9Soj5mvg2+NqtGvtljn77+UMW+qtjAPm4nUL9g0Je9SMe+vsShbjsidno94Ehcvm8rAj7id4k9glpDPeqXDL66DQ4/gj34PaZ87L7Zz7M+lFs5vodkhj7lkOc9LF0vvl9XuD2xs9s9eZd4PhYnez71Oh09c4ctPl8VvT4okwk+4GUVv0Y6tD6yk6W+7s2vvl4d7T1LCCs+MsMTv+XWAD8v1uS+8DIYu/SYpb2/xXm+x0YUvn5wkD7txiu+HJcGvpKjaT6mQmg+pNgjvo9mrT0q/dS+bZ0DPioUiz5IDA8+2C6dPFSHLT0cFJe+S2hmPlVBWz8YDtw9qp8zvjz8Or7E8lO+ricyvvbuJb5VovC9268DPmCuO76OzS6+qnq3vlYj2T5Y1lM+5bokvaSrob3qY/a9EJSAvqkFab4JScy9GPTjPQuhob0cNTi98pXjPs58TD4g3es6RsYGv74GqL3SDWS+e4qxPjbCJT5GoT2+9nwuvRjZlL4il6a+9YsnvaBI3T4yrXk+XNt1PmRklL77oXy+LxZbvU7wKz94VE2+GN9aP5LgML6+DU4+LY2ivG2rs755RHa98LJEvo9+QL4F6Sa+tHFQvvBgvz4PQYs/TNChvknmh754lp++XsagPeiU4z7xYHU+E+qBvkxHt77ifkC+fQnqPtCCuL4LMJO+HOW8Pd6FmT0Ae2o+B7SfvpyzbDzXnse+bVPBPqQKHj6TxKi+6gQWvgOFtz0ifD6+TA/YPM4Uaz59Jsa+kE4dPY396z2Ul+28Zq2pvjEFIb6kamm+omQ3vpqMAj4ZXJc+WvA2vUGR1r6A2lw8AkX3PhKlCT/trJE+n6WwPl74nD5OG3w+TD03Pw==",
+    "created_from": {
+      "source_file": "/Users/jasonyang/Documents/Development/memobot/ingest_pipeline/data/30s_clip.mp4",
+      "diarization_speaker": "SPEAKER_00"
+    }
+  }
+}

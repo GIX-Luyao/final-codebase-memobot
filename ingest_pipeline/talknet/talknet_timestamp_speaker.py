@@ -63,6 +63,28 @@ class Box:
         )
 
 
+def get_faces_at_timestamp(
+    demo_video: Path,
+    annotated_video: Path,
+    timestamp: float,
+) -> Tuple[List[Box], Optional[Box], np.ndarray]:
+    """
+    Read frames at a single timestamp from existing TalkNet output (no TalkNet run).
+    Returns: (all_face_boxes, speaker_box, original_frame)
+    """
+    cap_orig = open_video(demo_video)
+    cap_ann = open_video(annotated_video)
+    try:
+        orig_frame, _ = read_frame_at_timestamp(cap_orig, timestamp)
+        ann_frame, _ = read_frame_at_timestamp(cap_ann, timestamp)
+        boxes = find_colored_boxes(ann_frame)
+        speaker_box = pick_speaker_box(boxes)
+        return boxes, speaker_box, orig_frame
+    finally:
+        cap_orig.release()
+        cap_ann.release()
+
+
 def run_talknet_demo(repo_root: Path, video_name: str, force: bool = False, confidence_threshold: float = -0.5) -> Path:
     """
     Runs: python demoTalkNet.py --videoName <video_name> --confidenceThreshold <threshold>

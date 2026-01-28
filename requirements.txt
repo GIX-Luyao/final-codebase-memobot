@@ -1,7 +1,7 @@
 # FastAPI and server dependencies
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-pydantic==2.5.0
+pydantic-core>=2.18.2
 pydantic-settings==2.1.0
 python-multipart==0.0.6
 
@@ -69,3 +69,6 @@ pyaudio
 # Graph Database (optional, for future entity/relation storage)
 # neo4j==5.14.0
 
+twelvelabs>=1.2.0b0
+pinecone
+av
