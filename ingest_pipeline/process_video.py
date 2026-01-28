@@ -31,14 +31,6 @@ import asyncio
 import sys
 from pathlib import Path
 
-# Allow importing from root directory (for Memobot package)
-sys.path.insert(0, str(Path(__file__).parent.parent))
-try:
-    from Memobot import MemobotService
-except ImportError:
-    print("[Warning] Memobot package not found. Knowledge Graph ingestion will be skipped.")
-    MemobotService = None
-
 # Import speaker diarization functions
 sys.path.insert(0, str(Path(__file__).parent / "speaker_diarization"))
 from enroll_from_local_wav import (
@@ -91,18 +83,6 @@ from utils.database import (
 
 # Load .env from memobot root
 load_dotenv(dotenv_path=MEMOBOT_ROOT / ".env")
-# Initialize MemobotService globally
-# Allow importing from root directory (for Memobot package)
-sys.path.insert(0, str(Path(__file__).parent.parent))
-try:
-    from Memobot import MemobotService
-    # Initialize service once at the global level
-    # Configure from environment variables (NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD)
-    memobot_service = MemobotService.from_env(group_id='tenant_001')
-    print("[Info] MemobotService initialized globally")
-except Exception as e:
-    print(f"[Warning] Failed to initialize MemobotService globally: {e}")
-    memobot_service = None
 
 load_dotenv()
 PYANNOTE_API_KEY = os.getenv("PYANNOTE_API_KEY")
@@ -554,28 +534,22 @@ async def main_async():
         print(f"\n[OK] Results also saved to: {output_json}")
         print(f"[OK] All intermediate outputs saved to: {intermediate_dir}")
         
-        # Build Knowledge Graph (and other parallel ingestions if any)
-        if memobot_service and results:
-            print("\n=== Step 6: Building Knowledge Graph ===")
-            try:
-                # Parallel ingestion could be added here if there were other services
-                await memobot_service.build(results)
-                print("[OK] Knowledge graph built successfully")
-            except Exception as e:
-                print(f"[ERROR] Failed to build knowledge graph: {e}")
-        
     except Exception as e:
         print(f"\n[ERROR] Pipeline failed: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc()
         sys.exit(1)
-    finally:
-        if memobot_service:
-            await memobot_service.close()
 
 
 def main():
-    asyncio.run(main_async())
+    if len(sys.argv) != 2:
+        print("Usage: python ingest_pipeline.py <video_filename>")
+        print(f"  Video should be in: {DATA_DIR}")
+        print(f"  Face database should be in: {FACE_DB_DIR}")
+        sys.exit(1)
+    
+    video_filename = sys.argv[1]
+    process_video(video_filename)
 
 
 if __name__ == "__main__":

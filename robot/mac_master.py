@@ -7,6 +7,16 @@ import numpy as np
 import struct
 import sys
 import time
+import asyncio
+from pathlib import Path
+
+# Allow importing from root directory (for Memobot package)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    from Memobot import MemobotService
+except ImportError:
+    print("[Warning] Memobot package not found.")
+    MemobotService = None
 
 # --- CONFIGURATION ---
 HOST = '0.0.0.0'       # Listen on all interfaces
@@ -130,14 +140,33 @@ def main_video_loop():
         server_socket.close()
         cv2.destroyAllWindows()
 
+async def main():
+    # 1. Initialize MemobotService for the entire session
+    memobot_service = None
+    if MemobotService:
+        try:
+            memobot_service = MemobotService.from_env(group_id='tenant_001')
+            await memobot_service.initialize()
+            print("[Info] MemobotService initialized for the session")
+        except Exception as e:
+            print(f"[Warning] Failed to initialize MemobotService: {e}")
+
+    try:
+        # Start Audio threads
+        t1 = threading.Thread(target=thread_receive_audio_from_robot)
+        t2 = threading.Thread(target=thread_send_audio_to_robot)
+        t1.daemon = True
+        t2.daemon = True
+        t1.start()
+        t2.start()
+        
+        # Run Video in main thread
+        main_video_loop()
+    finally:
+        # 2. Close MemobotService when the session ends
+        if memobot_service:
+            await memobot_service.close()
+            print("[Info] MemobotService connection closed")
+
 if __name__ == "__main__":
-    # Start Audio threads
-    t1 = threading.Thread(target=thread_receive_audio_from_robot)
-    t2 = threading.Thread(target=thread_send_audio_to_robot)
-    t1.daemon = True
-    t2.daemon = True
-    t1.start()
-    t2.start()
-    
-    # Run Video in main thread
-    main_video_loop()
+    asyncio.run(main())
