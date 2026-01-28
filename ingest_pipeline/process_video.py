@@ -27,6 +27,9 @@ import cv2
 import numpy as np
 from dotenv import load_dotenv
 import requests
+import asyncio
+import sys
+from pathlib import Path
 
 # Import speaker diarization functions
 sys.path.insert(0, str(Path(__file__).parent / "speaker_diarization"))
@@ -80,6 +83,8 @@ from utils.database import (
 
 # Load .env from memobot root
 load_dotenv(dotenv_path=MEMOBOT_ROOT / ".env")
+
+load_dotenv()
 PYANNOTE_API_KEY = os.getenv("PYANNOTE_API_KEY")
 if not PYANNOTE_API_KEY:
     raise RuntimeError("Set env var PYANNOTE_API_KEY")
@@ -490,7 +495,8 @@ def process_video(video_filename: str) -> Tuple[List[Dict[str, Any]], Path]:
     return results, intermediate_dir
 
 
-def main():
+
+async def main_async():
     if len(sys.argv) != 2:
         print("Usage: python ingest_pipeline.py <video_filename>")
         print(f"  Video should be in: {DATA_DIR}")
@@ -500,6 +506,7 @@ def main():
     video_filename = sys.argv[1]
     
     try:
+        # Run the processing pipeline (synchronous)
         results, intermediate_dir = process_video(video_filename)
         
         # Print results
@@ -532,6 +539,17 @@ def main():
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+
+def main():
+    if len(sys.argv) != 2:
+        print("Usage: python ingest_pipeline.py <video_filename>")
+        print(f"  Video should be in: {DATA_DIR}")
+        print(f"  Face database should be in: {FACE_DB_DIR}")
+        sys.exit(1)
+    
+    video_filename = sys.argv[1]
+    process_video(video_filename)
 
 
 if __name__ == "__main__":
