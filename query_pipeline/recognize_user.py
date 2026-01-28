@@ -45,15 +45,19 @@ FACE_CACHE_PATH = QUERY_PIPELINE_DIR.parent / "deepface" / "db_embeddings.pkl"
 match_face.set_mac_stability_env(max_threads=1)
 
 
-def recognize_user():
-    """Recognize a user from image.png and output their database record."""
-    # Check if image.png exists
-    if not IMAGE_PATH.exists():
-        print(f"[Error] Image not found: {IMAGE_PATH}")
-        print(f"[Info] Please place an image named 'image.png' in the query_pipeline directory")
+def recognize_user(image_path=None):
+    """Recognize a user from an image and output their database record.
+
+    Args:
+        image_path: Path to the query image. Defaults to query_pipeline/image.png.
+    """
+    path = Path(image_path) if image_path else IMAGE_PATH
+    if not path.exists():
+        print(f"[Error] Image not found: {path}")
+        print(f"[Info] Please place an image in the query_pipeline directory or pass a valid path")
         sys.exit(1)
-    
-    print(f"[Info] Loading image: {IMAGE_PATH}")
+
+    print(f"[Info] Loading image: {path}")
     
     # Ensure database is initialized
     init_database()
@@ -95,7 +99,7 @@ def recognize_user():
     print(f"\n[Info] Matching face in image...")
     try:
         face_id, db_image, distance = match_face.match_query_to_db(
-            query_img=IMAGE_PATH,
+            query_img=path,
             db_map=db_map,
             model_name=FACE_MODEL,
             detector_backend=FACE_DETECTOR,
