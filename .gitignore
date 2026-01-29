@@ -21,7 +21,6 @@ env/
 ENV/
 .venv
 
-venv_310/
 
 # IDE
 .vscode/
@@ -33,6 +32,7 @@ venv_310/
 # Generated pipeline artifacts
 **/intermediate_outputs/
 
+.venv/
 
 # Explicitly track these directories (do not ignore)
 !**/pyframes/
