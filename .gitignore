@@ -17,7 +17,8 @@ __pycache__/
 *.so
 .Python
 venv/
-env/
+.venv/
+.env/
 ENV/
 
 # IDE
@@ -29,7 +30,7 @@ ENV/
 
 # Generated pipeline artifacts
 **/intermediate_outputs/
-**/ingest_pipeline/talknet/demo/*
+ingest_pipeline/talknet/
 
 
 # Explicitly track these directories (do not ignore)
