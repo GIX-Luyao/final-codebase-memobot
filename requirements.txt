@@ -65,7 +65,7 @@ tf-keras
 
 pyaudio
 
-# Note: Python 3.12.11 is required
+# Note: Python 3.9.6 is required
 # Graph Database (optional, for future entity/relation storage)
 neo4j==5.14.0
 
