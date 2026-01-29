@@ -19,6 +19,9 @@ load_dotenv(dotenv_path=DOTENV_PATH, override=True)
 # Try to import MemobotService
 MemobotService = None
 
+# Keep KG tenant/group configurable (so ingest + query can point to the same shared cloud graph)
+DEFAULT_MEMOBOT_GROUP_ID = os.getenv("MEMOBOT_GROUP_ID", "tenant_001")
+
 # Method 1: Try direct import (if installed as package)
 try:
     from Memobot import MemobotService
@@ -83,7 +86,7 @@ class RealtimeAgent:
         if MemobotService is None:
             return
         try:
-            self.memobot_service = MemobotService.from_env(group_id='tenant_001')
+            self.memobot_service = MemobotService.from_env(group_id=DEFAULT_MEMOBOT_GROUP_ID)
             print("[Info] MemobotService initialized for knowledge graph retrieval")
         except Exception as e:
             print(f"[Warning] Failed to initialize MemobotService: {e}")
@@ -781,7 +784,7 @@ async def test_knowledge_graph():
     # Initialize the service
     try:
         print("\n📡 Initializing MemobotService...")
-        service = MemobotService.from_env(group_id='tenant_001')
+        service = MemobotService.from_env(group_id=DEFAULT_MEMOBOT_GROUP_ID)
         print("✅ MemobotService initialized successfully")
     except Exception as e:
         print(f"\n❌ FAILED to initialize MemobotService: {e}")
@@ -865,7 +868,7 @@ async def add_test_memory():
     
     try:
         print("\n📡 Initializing MemobotService...")
-        service = MemobotService.from_env(group_id='tenant_001')
+        service = MemobotService.from_env(group_id=DEFAULT_MEMOBOT_GROUP_ID)
         print("✅ MemobotService initialized successfully")
     except Exception as e:
         print(f"\n❌ FAILED to initialize MemobotService: {e}")
