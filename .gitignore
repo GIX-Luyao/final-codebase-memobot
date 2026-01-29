@@ -20,6 +20,8 @@ venv/
 .venv/
 .env/
 ENV/
+.venv
+
 
 # IDE
 .vscode/
@@ -32,8 +34,10 @@ ENV/
 **/intermediate_outputs/
 ingest_pipeline/talknet/
 
+.venv/
 
 # Explicitly track these directories (do not ignore)
-!ingest_pipeline/talknet/demo/
 !**/pyframes/
 
+# Ignore TalkNet demo artifacts
+ingest_pipeline/talknet/demo/
