@@ -57,8 +57,8 @@ deepface
 pandas
 
 # TensorFlow and dependencies (macOS compatible versions)
-tensorflow==2.19.0
-tensorflow-metal
+tensorflow==2.16.2
+# tensorflow-metal  <-- Excluded due to x86_64 python on arm64 mac
 pyarrow==17.0.0
 
 tf-keras
