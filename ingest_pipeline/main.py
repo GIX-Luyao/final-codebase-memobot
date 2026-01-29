@@ -17,11 +17,39 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
+# #region agent log
+def log_debug(hypothesis_id, message, data=None):
+    log_entry = {
+        "sessionId": "debug-session",
+        "runId": "run_hang_analysis",
+        "hypothesisId": hypothesis_id,
+        "location": "ingest_pipeline/main.py",
+        "message": message,
+        "data": data or {},
+        "timestamp": int(datetime.now().timestamp() * 1000)
+    }
+    try:
+        with open("/Users/cathy/Desktop/Local Code/memobot/.cursor/debug.log", "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+    except:
+        pass
+# #endregion
+
+# #region agent log
+log_debug("A", "Script started - top of main.py")
+# #endregion
+
 # Ensure ingest_pipeline is on path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from process_video import process_video, DATA_DIR
+# #region agent log
+log_debug("B", "After importing process_video")
+# #endregion
 from vector_db import ingest_data
+# #region agent log
+log_debug("B", "After importing vector_db")
+# #endregion
 
 # Allow importing from root directory (for Memobot package)
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -113,12 +141,18 @@ async def ingest_to_graph(final_outputs: list[dict], memobot_service: MemobotSer
 
 
 async def main_async():
+    # #region agent log
+    log_debug("B", "Entering main_async()")
+    # #endregion
     # Optional args: [video_path_or_filename] [index_name] [clip_length_sec]
     index_name = DEFAULT_INDEX_NAME
     clip_length = DEFAULT_CLIP_LENGTH
     videos_to_process: list[tuple[Path, str]] = []  # (path, filename for process_video)
 
     # Initialize MemobotService
+    # #region agent log
+    log_debug("C", "Before MemobotService initialization")
+    # #endregion
     memobot_service = None
     if MemobotService:
         try:
@@ -126,6 +160,9 @@ async def main_async():
             print("[Info] MemobotService initialized")
         except Exception as e:
             print(f"[Warning] Failed to initialize MemobotService: {e}")
+    # #region agent log
+    log_debug("C", "After MemobotService initialization")
+    # #endregion
 
     if len(sys.argv) >= 2:
         # Explicit video: path or filename under data/
@@ -207,8 +244,14 @@ async def main_async():
 
 
 def main():
+    # #region agent log
+    log_debug("A", "Entering main() wrapper")
+    # #endregion
     asyncio.run(main_async())
 
 
 if __name__ == "__main__":
+    # #region agent log
+    log_debug("A", "Script __main__ execution started")
+    # #endregion
     main()
