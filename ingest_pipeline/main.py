@@ -30,6 +30,10 @@ try:
 except ImportError:
     print("[Warning] Memobot package not found. Knowledge Graph ingestion will be skipped.")
     MemobotService = None
+    exit(1)
+except Exception as e:
+    print(f"[Error] Failed to import MemobotService: {e}")
+    exit(1)
 
 # Default Pinecone index and clip length (one embedding per 30s clip)
 DEFAULT_INDEX_NAME = "twelve-labs"
@@ -86,6 +90,7 @@ async def ingest_to_graph(final_outputs: list[dict], memobot_service: MemobotSer
     Reformat final_outputs and build the knowledge graph.
     """
     if not memobot_service or not final_outputs:
+        print("[Warning] MemobotService not available or no final outputs to ingest.")
         return
 
     print("\n" + "=" * 60)

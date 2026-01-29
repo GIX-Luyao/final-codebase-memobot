@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-mac_master.py
+mac_maste_v3.py WITH DENOISING AND RESAMPLING
 
 Server running on Mac.
 Handles:
@@ -9,10 +9,9 @@ Handles:
 3. Audio stream to Robot (From Mac Mic OR From OpenAI Realtime API)
 
 UPDATES:
-- Fixed Underrun: Implemented 'Jitter Buffer' to accumulate small API deltas into 
-  healthy network packets before sending to Robot.
-- Fixed Low Volume: Added 'Software Gain' (Input Boost) to amplify user voice 
-  before sending to AI.
+- Fixed Noise: Added Realtime Bandpass Filter (300Hz - 4000Hz) to remove fan rumble and hiss.
+- Fixed Underrun: Jitter Buffer enabled.
+- Fixed Volume: Input Gain enabled.
 """
 
 import socket
@@ -45,6 +44,15 @@ except ImportError:
     print("[Warning] Memobot package not found.")
     MemobotService = None
 
+# Try importing Scipy for Filtering
+try:
+    from scipy import signal
+    SCIPY_AVAILABLE = True
+except ImportError:
+    print("[Warning] 'scipy' not found. Noise filtering disabled.")
+    print("Run: pip install scipy")
+    SCIPY_AVAILABLE = False
+
 # --- CONFIGURATION ---
 HOST = '0.0.0.0'
 PORT_AUDIO_RX = 50005
@@ -58,15 +66,11 @@ ROBOT_RATE = 16000  # Nao Robot native rate
 AI_RATE = 24000     # OpenAI Realtime API rate
 BYTES_PER_SAMPLE = 2
 
-# INPUT GAIN: Multiplier for User Voice Volume (1.0 = Normal, 3.0 = 3x Louder)
-INPUT_GAIN = 4.0 
-
-# JITTER BUFFER: Minimum bytes to accumulate before sending to robot.
-# 4096 bytes @ 16k is approx 128ms of audio. 
-# This prevents sending tiny packets that cause underruns.
+# DSP CONFIG
+INPUT_GAIN = 3.0           # Boost volume (3x)
+FILTER_LOW_CUT = 300       # Remove rumble below 300Hz
+FILTER_HIGH_CUT = 4000     # Remove hiss above 4000Hz
 MIN_SEND_BUFFER_SIZE = 4096 
-
-# Latency padding for Echo Gate
 PLAYBACK_PADDING = 0.5 
 
 # --- GLOBAL STATE ---
@@ -74,6 +78,42 @@ audio_tx_queue = queue.Queue()
 agent_instance = None
 loop_instance = None
 use_realtime = False
+
+
+# --- DSP UTILITIES ---
+
+class RealtimeFilter:
+    """
+    Maintains filter state (zi) between audio chunks to prevent clicking artifacts.
+    """
+    def __init__(self, low_cut, high_cut, fs, order=5):
+        self.enabled = SCIPY_AVAILABLE
+        if not self.enabled:
+            return
+            
+        nyq = 0.5 * fs
+        low = low_cut / nyq
+        high = high_cut / nyq
+        
+        # Design Butterworth Bandpass Filter
+        self.b, self.a = signal.butter(order, [low, high], btype='band')
+        
+        # Initialize filter state (zi)
+        self.zi = signal.lfilter_zi(self.b, self.a)
+
+    def process(self, audio_bytes):
+        if not self.enabled:
+            return audio_bytes
+        
+        # Convert to Float32 for processing
+        data = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+        
+        # Apply Filter with State preservation
+        filtered_data, self.zi = signal.lfilter(self.b, self.a, data, zi=self.zi)
+        
+        # Convert back to Int16
+        return filtered_data.astype(np.int16).tobytes()
+
 
 def resample_audio(audio_bytes, src_rate, dst_rate):
     """Resample audio bytes from src_rate to dst_rate using numpy."""
@@ -96,7 +136,6 @@ def apply_gain(audio_bytes, gain):
         return audio_bytes
     
     data = np.frombuffer(audio_bytes, dtype=np.int16)
-    # Multiply and clip to prevent distortion (overflow)
     boosted = data * gain
     boosted = np.clip(boosted, -32768, 32767)
     return boosted.astype(np.int16).tobytes()
@@ -110,19 +149,16 @@ class ServerRealtimeAgent(RealtimeAgent):
         super().__init__(api_key, user_name)
         self.output_stream = None
         self.input_stream = None
-        
-        # Virtual Playback Tracking
         self.playback_end_time = 0.0
         self.state_lock = threading.Lock()
-
-        # Output Buffer (Jitter Buffer)
         self.out_buffer = bytearray()
+        
+        # Initialize Noise Filter
+        self.noise_filter = RealtimeFilter(FILTER_LOW_CUT, FILTER_HIGH_CUT, ROBOT_RATE)
 
     def register_audio_payload(self, audio_bytes_at_robot_rate):
-        """Update virtual playback timer based on audio length."""
         bytes_per_sec = ROBOT_RATE * BYTES_PER_SAMPLE * CHANNELS
         duration = len(audio_bytes_at_robot_rate) / float(bytes_per_sec)
-        
         current_time = time.time()
         with self.state_lock:
             if self.playback_end_time > current_time:
@@ -131,18 +167,15 @@ class ServerRealtimeAgent(RealtimeAgent):
                 self.playback_end_time = current_time + duration
 
     def is_robot_speaking(self):
-        """Check if we are currently within the virtual playback window."""
         with self.state_lock:
             return time.time() < (self.playback_end_time + PLAYBACK_PADDING)
 
     async def capture_audio(self):
-        """Override: Keep alive, but do not capture local mic."""
         print("[Agent] Ready to receive audio from Robot socket...")
         while self.is_recording:
             await asyncio.sleep(0.1)
 
     async def receive_messages(self):
-        """Override: Push API audio to queue, but BUFFER IT first."""
         print("[Agent] Listening for API responses...")
         try:
             async for message in self.ws:
@@ -155,27 +188,17 @@ class ServerRealtimeAgent(RealtimeAgent):
                 elif event_type == "response.audio.delta":
                     audio_b64 = event.get("delta", "")
                     if audio_b64:
-                        # 1. Decode (24kHz)
                         audio_24k = base64.b64decode(audio_b64)
-                        
-                        # 2. Resample 24kHz -> 16kHz for Robot
                         audio_16k = resample_audio(audio_24k, src_rate=AI_RATE, dst_rate=ROBOT_RATE)
-                        
-                        # 3. Add to Jitter Buffer
                         self.out_buffer.extend(audio_16k)
 
-                        # 4. Only push to queue if buffer is big enough (Prevent Underruns)
                         if len(self.out_buffer) >= MIN_SEND_BUFFER_SIZE:
                             chunk = bytes(self.out_buffer)
-                            self.out_buffer.clear() # Reset buffer
-                            
-                            # Update Echo Gate logic
+                            self.out_buffer.clear()
                             self.register_audio_payload(chunk)
-                            # Send to Socket Thread
                             audio_tx_queue.put(chunk)
 
                 elif event_type == "response.audio.done":
-                    # Flush remaining buffer when response is done
                     if len(self.out_buffer) > 0:
                         chunk = bytes(self.out_buffer)
                         self.out_buffer.clear()
@@ -184,10 +207,8 @@ class ServerRealtimeAgent(RealtimeAgent):
 
                 elif event_type == "response.audio_transcript.delta":
                     print(event.get("delta", ""), end="", flush=True)
-                
                 elif event_type == "response.audio_transcript.done":
                     print()
-                
                 elif event_type == "response.function_call_arguments.done":
                     call_id = event.get("call_id", "")
                     name = event.get("name", "")
@@ -199,13 +220,20 @@ class ServerRealtimeAgent(RealtimeAgent):
 
     def ingest_robot_audio(self, audio_bytes_16k):
         """
-        Takes 16kHz audio from robot, Amplifies, Resamples to 24kHz, sends to OpenAI.
+        Pipeline: 
+        1. Denoise (Bandpass Filter)
+        2. Amplify (Gain)
+        3. Resample (16k -> 24k)
+        4. Send to AI
         """
         if self.ws:
-            # 1. Apply Gain (Boost Volume)
-            boosted_audio = apply_gain(audio_bytes_16k, INPUT_GAIN)
+            # 1. Bandpass Filter (Removes Fan Rumble + Hiss)
+            clean_audio = self.noise_filter.process(audio_bytes_16k)
 
-            # 2. Resample 16kHz -> 24kHz for OpenAI
+            # 2. Apply Gain (Boost Volume)
+            boosted_audio = apply_gain(clean_audio, INPUT_GAIN)
+
+            # 3. Resample 16kHz -> 24kHz for OpenAI
             audio_24k = resample_audio(boosted_audio, src_rate=ROBOT_RATE, dst_rate=AI_RATE)
             
             asyncio.run_coroutine_threadsafe(self.send_audio(audio_24k), loop_instance)
@@ -239,12 +267,12 @@ def thread_receive_audio_from_robot():
             if not data: break
 
             if use_realtime:
-                # Echo Gate: Drop packets if robot is speaking
+                # Echo Gate
                 if agent_instance and agent_instance.is_robot_speaking():
                     continue 
                 
+                # Ingest (Filtering -> Gain -> Resample)
                 if agent_instance and loop_instance:
-                    # Ingest logic (includes Volume Boost)
                     agent_instance.ingest_robot_audio(data)
 
             elif stream:
@@ -286,7 +314,6 @@ def thread_send_audio_to_robot():
 
             if use_realtime:
                 try:
-                    # Block briefly to wait for API audio
                     data_to_send = audio_tx_queue.get(timeout=1.0)
                 except queue.Empty:
                     continue
@@ -310,7 +337,6 @@ def thread_send_audio_to_robot():
         if p: p.terminate()
 
 def recv_exact(sock, n):
-    """Helper to receive exactly n bytes."""
     data = b''
     while len(data) < n:
         packet = sock.recv(n - len(data))
@@ -336,7 +362,7 @@ async def main():
             print("ERROR: OPENAI_API_KEY not found.")
             return
         print(f"[System] Starting in REALTIME API mode (User: {args.user_name})")
-        print(f"[System] Input Gain: {INPUT_GAIN}x | Jitter Buffer: {MIN_SEND_BUFFER_SIZE} bytes")
+        print(f"[System] Bandpass Filter Enabled (300Hz-4000Hz)")
         agent_instance = ServerRealtimeAgent(api_key, user_name=args.user_name)
     else:
         print("[System] Starting in STANDARD PASS-THROUGH mode")
@@ -398,8 +424,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
 
 
 
