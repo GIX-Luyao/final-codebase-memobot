@@ -16,8 +16,12 @@ __pycache__/
 *$py.class
 *.so
 .Python
+venv/
 env/
 ENV/
+.venv
+
+venv_310/
 
 # IDE
 .vscode/
@@ -31,6 +35,7 @@ ENV/
 
 
 # Explicitly track these directories (do not ignore)
-!ingest_pipeline/talknet/demo/
 !**/pyframes/
 
+# Ignore TalkNet demo artifacts
+ingest_pipeline/talknet/demo/
