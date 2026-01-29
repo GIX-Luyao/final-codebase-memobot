@@ -16,6 +16,45 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 DOTENV_PATH = os.path.join(_REPO_ROOT, ".env")
 load_dotenv(dotenv_path=DOTENV_PATH, override=True)
 
+# Try to import MemobotService
+MemobotService = None
+
+# Method 1: Try direct import (if installed as package)
+try:
+    from Memobot import MemobotService
+    print("[Info] Memobot package loaded successfully (installed package)")
+except ImportError as e1:
+    # Method 2: Try importing from root directory
+    if _REPO_ROOT not in sys.path:
+        sys.path.insert(0, _REPO_ROOT)
+    try:
+        from Memobot import MemobotService
+        print("[Info] Memobot package loaded successfully (from repo root)")
+    except ImportError as e2:
+        print(f"[Warning] Memobot package not found")
+        print(f"   - Direct import error: {e1}")
+        print(f"   - Repo root import error: {e2}")
+        print(f"   - Repo root path: {_REPO_ROOT}")
+        
+        # Check if Memobot directory exists
+        memobot_dir = os.path.join(_REPO_ROOT, "Memobot")
+        if os.path.exists(memobot_dir):
+            print(f"   - Memobot directory exists at: {memobot_dir}")
+            print(f"   - Contents: {os.listdir(memobot_dir)}")
+            init_file = os.path.join(memobot_dir, "__init__.py")
+            if os.path.exists(init_file):
+                print(f"   - __init__.py exists")
+            else:
+                print(f"   - __init__.py NOT FOUND - this may be the issue!")
+        else:
+            print(f"   - Memobot directory NOT FOUND at: {memobot_dir}")
+        
+        print("\n[Info] To install Memobot as a package, run one of:")
+        print(f"   cd {_REPO_ROOT} && pip install -e ./Memobot")
+        print("   or")
+        print(f"   pip install -e {memobot_dir}")
+        print("\n[Warning] Knowledge Graph retrieval will be skipped.")
+
 # Audio constants for Realtime API (24kHz, 16-bit PCM, mono)
 SAMPLE_RATE = 24000
 CHANNELS = 1
@@ -26,21 +65,33 @@ CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
 class RealtimeAgent:
     """Agent using OpenAI's Realtime API for audio-to-audio interaction."""
     
-    def __init__(self, api_key, user_name=None, output_audio_callback=None):
+    def __init__(self, api_key, user_name=None, person_id=None):
         self.api_key = api_key
         self.user_name = user_name
+        self.person_id = person_id  # Direct person_id for knowledge graph queries
         self.ws = None
         self.audio_queue = asyncio.Queue()
         self.is_recording = False
         self.input_stream = None
         self.output_stream = None
         self.sd = None  # sounddevice module
-        # When set, response audio is sent here instead of local playback (robot bridge mode)
-        self.output_audio_callback = output_audio_callback
+        self.memobot_service = None  # Knowledge graph service
+        self._init_memobot_service()
+    
+    def _init_memobot_service(self):
+        """Initialize the MemobotService for knowledge graph queries."""
+        if MemobotService is None:
+            return
+        try:
+            self.memobot_service = MemobotService.from_env(group_id='tenant_001')
+            print("[Info] MemobotService initialized for knowledge graph retrieval")
+        except Exception as e:
+            print(f"[Warning] Failed to initialize MemobotService: {e}")
+            self.memobot_service = None
         
     async def get_ephemeral_token(self):
         """Get an ephemeral client secret for WebSocket connection."""
-        base_instructions = "You are a helpful assistant with access to a memory system. When users ask about past events, use the retrieveMemory function to find relevant information. When you are unsure, do not make up information. Keep responses concise for voice interaction."
+        base_instructions = "You are a helpful assistant with access to a memory system. You must speak english. When users ask about past events, use the retrieveMemory function to find relevant information. When you are unsure, do not make up information. Keep responses concise for voice interaction."
         if self.user_name:
             instructions = f"You are speaking with {self.user_name}. " + base_instructions
         else:
@@ -87,13 +138,16 @@ class RealtimeAgent:
         data = response.json()
         return data["client_secret"]["value"]
     
-    def retrieve_memory(self, query):
-        """Retrieve memories using the existing pipeline."""
+    async def retrieve_memory(self, query):
+        """Retrieve memories using both vector DB and knowledge graph."""
+        vector_results = []
+        graph_results = []
+        
+        # 1. Query Vector Database (existing logic)
         try:
-            # Direct import since we're in the same directory
             from query import retrieve_and_rank
             
-            print(f"[DEBUG] Calling retrieve_and_rank with query: {query}")
+            print(f"[DEBUG] Querying vector DB with: {query}")
             
             results = retrieve_and_rank(
                 question=query,
@@ -104,11 +158,11 @@ class RealtimeAgent:
                 gamma=0.2,
             )
             
-            events = []
             for r in results:
                 md = r.get("metadata", {})
                 event = {
                     "id": r["id"],
+                    "source": "vector_db",
                     "summary": md.get("summary", ""),
                     "video_file": md.get("video_file", ""),
                     "start_time_sec": md.get("start_time_sec"),
@@ -118,44 +172,154 @@ class RealtimeAgent:
                     "relevance_score": r["relevance_score"],
                     "final_score": r["final_score"],
                 }
-                events.append(event)
-            
-            memory_context = {
-                "events": events,
-                "metadata": {
-                    "total_results": len(events),
-                    "query": query,
-                }
-            }
-            
-            if memory_context.get("events"):
-                print(f"\n📋 Retrieved {len(memory_context['events'])} relevant memories:")
-                for i, event in enumerate(events[:5], 1):  # Show top 5
-                    print(f"\n  [{i}] ID: {event['id']}")
-                    print(f"      Summary: {event['summary'][:150]}..." if len(event.get('summary', '')) > 150 else f"      Summary: {event.get('summary', 'N/A')}")
-                    print(f"      Video: {event.get('video_file', 'N/A')}")
-                    print(f"      Time: {event.get('start_time_sec', '?')}s - {event.get('end_time_sec', '?')}s")
-                    print(f"      Timestamp: {event.get('timestamp_utc', 'N/A')}")
-                    print(f"      Scores: relevance={event.get('relevance_score', 0):.3f}, final={event.get('final_score', 0):.3f}")
-                if len(events) > 5:
-                    print(f"\n  ... and {len(events) - 5} more memories")
-                print()
-            else:
-                print(f"[DEBUG] No events found")
-            
-            return memory_context
-            
+                vector_results.append(event)
+                
         except ImportError as e:
-            print(f"[DEBUG] Import error: {e}")
-            print("[DEBUG] Make sure you're running with the correct virtual environment:")
-            print("  source venv/bin/activate  # or your venv path")
-            print("  python query_pipeline/robo_client.py --mode realtime")
-            return {"events": [], "metadata": {"error": f"Import error: {str(e)}"}}
+            print(f"[DEBUG] Vector DB import error: {e}")
         except Exception as e:
             import traceback
-            print(f"[DEBUG] Exception in retrieve_memory: {e}")
+            print(f"[DEBUG] Vector DB query error: {e}")
             print(f"[DEBUG] Traceback: {traceback.format_exc()}")
-            return {"events": [], "metadata": {"error": str(e)}}
+        
+        # 2. Query Knowledge Graph (now using await directly)
+        if self.memobot_service:
+            try:
+                print(f"[DEBUG] Querying knowledge graph with: {query}")
+                graph_results = await self._query_knowledge_graph(query)
+            except Exception as e:
+                import traceback
+                print(f"[DEBUG] Knowledge graph query error: {e}")
+                print(f"[DEBUG] Traceback: {traceback.format_exc()}")
+        
+        # 3. Merge and format results
+        all_events = vector_results + graph_results
+        
+        memory_context = {
+            "events": all_events,
+            "metadata": {
+                "total_results": len(all_events),
+                "vector_db_results": len(vector_results),
+                "graph_db_results": len(graph_results),
+                "query": query,
+            }
+        }
+        
+        # Print results summary
+        if all_events:
+            print(f"\n📋 Retrieved {len(all_events)} memories ({len(vector_results)} from vector DB, {len(graph_results)} from knowledge graph):")
+            for i, event in enumerate(all_events[:5], 1):
+                source = event.get('source', 'unknown')
+                print(f"\n  [{i}] Source: {source} | ID: {event.get('id', 'N/A')}")
+                summary = event.get('summary') or event.get('text', 'N/A')
+                print(f"      Content: {summary[:150]}..." if len(str(summary)) > 150 else f"      Content: {summary}")
+                if event.get('person_name'):
+                    print(f"      Person: {event.get('person_name')}")
+                if event.get('video_file'):
+                    print(f"      Video: {event.get('video_file')}")
+            if len(all_events) > 5:
+                print(f"\n  ... and {len(all_events) - 5} more memories")
+            print()
+        else:
+            print(f"[DEBUG] No events found from either source")
+        
+        return memory_context
+
+    async def _query_knowledge_graph(self, query: str) -> list[dict]:
+        """Query the knowledge graph for relevant memories."""
+        results = []
+        
+        if not self.memobot_service:
+            return results
+        
+        try:
+            # Determine person_id for the query
+            person_id = self.person_id  # Use directly provided person_id first
+            
+            if not person_id and self.user_name:
+                # Map user_name to person_id convention: user_{lowercase_name}_001
+                person_id = f"user_{self.user_name.lower()}_001"
+                print(f"[DEBUG] Mapped user_name '{self.user_name}' to person_id '{person_id}'")
+            
+            if not person_id:
+                print(f"[DEBUG] No person_id available, knowledge graph query requires person_id")
+                return results
+            
+            print(f"[DEBUG] Querying knowledge graph with person_id: {person_id}")
+            
+            graph_response = await self.memobot_service.retrieve(
+                query,
+                person_id=person_id,
+            )
+            
+            # Parse the response structure from MemobotService
+            # Response format: {'center_person': {...}, 'events': [...], ...}
+            if graph_response:
+                if isinstance(graph_response, dict):
+                    # Extract events from the response
+                    events = graph_response.get("events", [])
+                    center_person = graph_response.get("center_person", {})
+                    
+                    # If no events but we have center_person info, create a result from it
+                    if not events and center_person:
+                        results.append({
+                            "id": center_person.get("uuid", "kg_person"),
+                            "source": "knowledge_graph",
+                            "person_id": center_person.get("person_id", ""),
+                            "person_name": center_person.get("name", ""),
+                            "text": f"Person: {center_person.get('name', 'Unknown')}",
+                            "timestamp_utc": center_person.get("updated_at", ""),
+                        })
+                    
+                    # Process events
+                    for event in events:
+                        if isinstance(event, dict):
+                            results.append({
+                                "id": event.get("uuid", event.get("id", "")),
+                                "source": "knowledge_graph",
+                                "person_id": event.get("person_id", ""),
+                                "person_name": event.get("person_name", center_person.get("name", "")),
+                                "text": event.get("content", event.get("text", event.get("summary", ""))),
+                                "summary": event.get("summary", event.get("content", "")),
+                                "timestamp_utc": event.get("timestamp", event.get("updated_at", "")),
+                            })
+                    
+                    # Also check for related nodes/edges if present
+                    related_nodes = graph_response.get("related_nodes", [])
+                    for node in related_nodes:
+                        if isinstance(node, dict) and node.get("type") == "Event":
+                            results.append({
+                                "id": node.get("uuid", ""),
+                                "source": "knowledge_graph",
+                                "text": node.get("content", node.get("name", "")),
+                                "timestamp_utc": node.get("updated_at", ""),
+                            })
+                            
+                elif isinstance(graph_response, str):
+                    results.append({
+                        "id": "kg_response",
+                        "source": "knowledge_graph",
+                        "text": graph_response,
+                    })
+                elif isinstance(graph_response, list):
+                    for item in graph_response:
+                        if isinstance(item, dict):
+                            results.append({
+                                "id": item.get("id", item.get("uuid", "")),
+                                "source": "knowledge_graph",
+                                "person_id": item.get("person_id", ""),
+                                "person_name": item.get("person_name", item.get("name", "")),
+                                "text": item.get("text", item.get("content", "")),
+                                "timestamp_utc": item.get("timestamp", ""),
+                            })
+                    
+        except Exception as e:
+            # Handle the "No center node provided" error gracefully
+            if "No center node provided" in str(e):
+                print(f"[DEBUG] Knowledge graph query requires person_id, skipping global search")
+            else:
+                print(f"[DEBUG] Knowledge graph query failed: {e}")
+        
+        return results
     
     async def connect(self):
         """Connect to the Realtime API via WebSocket."""
@@ -210,7 +374,8 @@ class RealtimeAgent:
             
             if name == "retrieveMemory":
                 print(f"\n🔍 Searching memories for: {args.get('queryText', '')}")
-                result = self.retrieve_memory(args.get("queryText", ""))
+                # Now using await since retrieve_memory is async
+                result = await self.retrieve_memory(args.get("queryText", ""))
                 
                 await self.ws.send(json.dumps({
                     "type": "conversation.item.create",
@@ -423,13 +588,21 @@ class RealtimeAgent:
                 self.output_stream.close()
             except:
                 pass
+        
+        # Close MemobotService connection
+        if self.memobot_service:
+            try:
+                asyncio.run(self.memobot_service.close())
+            except:
+                pass
 
 
-def run_realtime_mode(user_name=None):
+def run_realtime_mode(user_name=None, person_id=None):
     """Run the agent in realtime audio mode.
 
     Args:
         user_name: Optional name of the recognized user; injected into the system prompt.
+        person_id: Optional person_id for knowledge graph queries.
     """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -447,6 +620,8 @@ def run_realtime_mode(user_name=None):
     print("=" * 40)
     if user_name:
         print(f"Recognized user: {user_name}")
+    if person_id:
+        print(f"Person ID: {person_id}")
     print("This mode uses OpenAI's Realtime API for")
     print("voice-to-voice conversation with memory access.")
     print("\nRequirements:")
@@ -455,7 +630,7 @@ def run_realtime_mode(user_name=None):
     print("  - websockets (pip install websockets)")
     print("=" * 40)
     
-    agent = RealtimeAgent(api_key, user_name=user_name)
+    agent = RealtimeAgent(api_key, user_name=user_name, person_id=person_id)
     asyncio.run(agent.run())
 
 
@@ -582,25 +757,200 @@ def run_text_mode():
             break
 
 
+async def test_knowledge_graph():
+    """Test the knowledge graph service connection and basic operations."""
+    print("\n" + "=" * 60)
+    print("🧪 Testing Knowledge Graph Service")
+    print("=" * 60)
+    
+    # Check if MemobotService is available
+    if MemobotService is None:
+        print("\n❌ FAILED: Memobot package not found")
+        print("   Make sure the Memobot package exists in the root directory")
+        print(f"   Expected location: {_REPO_ROOT}/Memobot/")
+        print("\n   Directory contents:")
+        try:
+            for item in os.listdir(_REPO_ROOT):
+                print(f"      {item}")
+        except Exception as e:
+            print(f"      Error listing directory: {e}")
+        return False
+    
+    print("\n✅ Memobot package imported successfully")
+    
+    # Initialize the service
+    try:
+        print("\n📡 Initializing MemobotService...")
+        service = MemobotService.from_env(group_id='tenant_001')
+        print("✅ MemobotService initialized successfully")
+    except Exception as e:
+        print(f"\n❌ FAILED to initialize MemobotService: {e}")
+        print("\n   Check your environment variables in .env:")
+        print("   - NEO4J_URI")
+        print("   - NEO4J_USER")
+        print("   - NEO4J_PASSWORD")
+        return False
+    
+    # Test 1: Check service attributes
+    print("\n📋 Service attributes:")
+    print(f"   - group_id: {getattr(service, 'group_id', 'N/A')}")
+    print(f"   - Service type: {type(service).__name__}")
+    print(f"   - Available methods: {[m for m in dir(service) if not m.startswith('_')]}")
+    
+    # Test 2: Test build operation with sample data
+    print("\n🏗️  Testing build operation...")
+    from datetime import datetime, timezone
+    
+    test_data = {
+        "id": f"test_log_{int(datetime.now().timestamp())}",
+        "person_name": "Test User",
+        "person_id": "test_person_001",
+        "text": "This is a test memory entry for knowledge graph verification.",
+        "robot_pos_list": [],
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    
+    try:
+        await service.build(test_data)
+        print("   ✅ Build operation successful")
+    except Exception as e:
+        print(f"   ⚠️  Build failed: {e}")
+    
+    # Test 3: Test retrieve operation
+    test_queries = [
+        ("What is the test memory?", "test_person_001"),
+        ("What happened?", None),
+    ]
+    
+    print("\n🔍 Testing retrieve queries...")
+    for query, person_id in test_queries:
+        print(f"\n   Query: '{query}' (person_id={person_id})")
+        try:
+            result = await service.retrieve(query, person_id=person_id)
+            print(f"   ✅ Retrieve successful")
+            print(f"   📄 Result type: {type(result).__name__}")
+            print(f"   📄 Result: {str(result)[:200]}...")
+        except Exception as e:
+            print(f"   ⚠️  Retrieve failed: {e}")
+    
+    # Cleanup
+    print("\n🧹 Cleaning up...")
+    try:
+        await service.close()
+        print("   ✅ Service closed successfully")
+    except Exception as e:
+        print(f"   ⚠️  Close failed: {e}")
+    
+    print("\n" + "=" * 60)
+    print("✅ Knowledge Graph Service test completed")
+    print("=" * 60)
+    return True
+
+
+def run_test_graph():
+    """Run the knowledge graph test."""
+    success = asyncio.run(test_knowledge_graph())
+    sys.exit(0 if success else 1)
+
+
+async def add_test_memory():
+    """Add a test memory entry to the knowledge graph."""
+    print("\n" + "=" * 60)
+    print("📝 Adding Test Memory to Knowledge Graph")
+    print("=" * 60)
+    
+    if MemobotService is None:
+        print("\n❌ FAILED: Memobot package not found")
+        return False
+    
+    try:
+        print("\n📡 Initializing MemobotService...")
+        service = MemobotService.from_env(group_id='tenant_001')
+        print("✅ MemobotService initialized successfully")
+    except Exception as e:
+        print(f"\n❌ FAILED to initialize MemobotService: {e}")
+        return False
+    
+    # Add Jason wearing black jacket - following the example format
+    input_data = {
+        "id": "log_jason_001",
+        "person_name": "Jason",
+        "person_id": "user_jason_001",
+        "text": "Jason is wearing a black jacket today. He looks very stylish.",
+        "robot_pos_list": [],
+        "timestamp": "2026-01-28T10:00:00Z",
+    }
+    
+    print(f"\n📄 Adding memory:")
+    print(f"   ID: {input_data['id']}")
+    print(f"   Person: {input_data['person_name']}")
+    print(f"   Person ID: {input_data['person_id']}")
+    print(f"   Text: {input_data['text']}")
+    print(f"   Timestamp: {input_data['timestamp']}")
+    
+    try:
+        await service.build(input_data)
+        print("\n✅ Memory added successfully!")
+    except Exception as e:
+        print(f"\n❌ Failed to add memory: {e}")
+        await service.close()
+        return False
+    
+    # Verify by querying
+    print("\n🔍 Verifying by querying...")
+    try:
+        result = await service.retrieve(
+            "What is Jason wearing?",
+            person_id="user_jason_001",
+        )
+        print(f"✅ Query successful")
+        print(f"📄 Result: {result}")
+    except Exception as e:
+        print(f"⚠️  Query failed: {e}")
+    
+    # Cleanup
+    await service.close()
+    
+    print("\n" + "=" * 60)
+    print("✅ Done!")
+    print("=" * 60)
+    return True
+
+
+def run_add_memory():
+    """Run the add memory function."""
+    success = asyncio.run(add_test_memory())
+    sys.exit(0 if success else 1)
+
+
 if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Memobot - AI assistant with memory")
     parser.add_argument(
         "--mode", 
-        choices=["text", "realtime", "audio"],
+        choices=["text", "realtime", "audio", "test-graph", "add-memory"],
         default="text",
-        help="Interaction mode: 'text' for chat, 'realtime' or 'audio' for voice"
+        help="Interaction mode: 'text' for chat, 'realtime' or 'audio' for voice, 'test-graph' to test knowledge graph, 'add-memory' to add test data"
     )
     parser.add_argument(
         "--user-name",
         default=None,
         help="Recognized user's name; injected into the system prompt in realtime/audio mode"
     )
+    parser.add_argument(
+        "--person-id",
+        default=None,
+        help="Person ID for knowledge graph queries (e.g., user_jason_001)"
+    )
     
     args = parser.parse_args()
     
-    if args.mode in ["realtime", "audio"]:
-        run_realtime_mode(user_name=args.user_name)
+    if args.mode == "test-graph":
+        run_test_graph()
+    elif args.mode == "add-memory":
+        run_add_memory()
+    elif args.mode in ["realtime", "audio"]:
+        run_realtime_mode(user_name=args.user_name, person_id=args.person_id)
     else:
         run_text_mode()
