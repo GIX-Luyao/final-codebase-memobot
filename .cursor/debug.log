@@ -6,3 +6,24 @@
 {"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "A", "location": "ingest_pipeline/main.py", "message": "Script started - top of main.py", "data": {}, "timestamp": 1769649816941}
 {"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "A", "location": "ingest_pipeline/main.py", "message": "Script started - top of main.py", "data": {}, "timestamp": 1769650729877}
 {"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "A", "location": "ingest_pipeline/main.py", "message": "Script started - top of main.py", "data": {}, "timestamp": 1769651374396}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "A", "location": "ingest_pipeline/main.py", "message": "Script started - top of main.py", "data": {}, "timestamp": 1769651626532}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "A", "location": "ingest_pipeline/main.py", "message": "Script started - top of main.py", "data": {}, "timestamp": 1769652367726}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "A", "location": "ingest_pipeline/main.py", "message": "Script started - top of main.py", "data": {}, "timestamp": 1769652376294}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "A", "location": "ingest_pipeline/main.py", "message": "Script started - top of main.py", "data": {}, "timestamp": 1769652507165}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "A", "location": "ingest_pipeline/main.py", "message": "Script started - top of main.py", "data": {}, "timestamp": 1769654004329}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "A", "location": "ingest_pipeline/main.py", "message": "Script started - top of main.py", "data": {}, "timestamp": 1769654386736}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "B", "location": "ingest_pipeline/main.py", "message": "After importing process_video", "data": {}, "timestamp": 1769654423026}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "B", "location": "ingest_pipeline/main.py", "message": "After importing vector_db", "data": {}, "timestamp": 1769654423838}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "A", "location": "ingest_pipeline/main.py", "message": "Script __main__ execution started", "data": {}, "timestamp": 1769654423838}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "A", "location": "ingest_pipeline/main.py", "message": "Entering main() wrapper", "data": {}, "timestamp": 1769654423839}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "B", "location": "ingest_pipeline/main.py", "message": "Entering main_async()", "data": {}, "timestamp": 1769654423839}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "C", "location": "ingest_pipeline/main.py", "message": "Before MemobotService initialization", "data": {}, "timestamp": 1769654423839}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "C", "location": "ingest_pipeline/main.py", "message": "After MemobotService initialization", "data": {}, "timestamp": 1769654423839}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "A", "location": "ingest_pipeline/main.py", "message": "Script started - top of main.py", "data": {}, "timestamp": 1769654523617}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "B", "location": "ingest_pipeline/main.py", "message": "After importing process_video", "data": {}, "timestamp": 1769654526968}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "B", "location": "ingest_pipeline/main.py", "message": "After importing vector_db", "data": {}, "timestamp": 1769654527201}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "A", "location": "ingest_pipeline/main.py", "message": "Script __main__ execution started", "data": {}, "timestamp": 1769654527201}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "A", "location": "ingest_pipeline/main.py", "message": "Entering main() wrapper", "data": {}, "timestamp": 1769654527201}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "B", "location": "ingest_pipeline/main.py", "message": "Entering main_async()", "data": {}, "timestamp": 1769654527201}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "C", "location": "ingest_pipeline/main.py", "message": "Before MemobotService initialization", "data": {}, "timestamp": 1769654527201}
+{"sessionId": "debug-session", "runId": "run_hang_analysis", "hypothesisId": "C", "location": "ingest_pipeline/main.py", "message": "After MemobotService initialization", "data": {}, "timestamp": 1769654527201}
