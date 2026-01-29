@@ -1,0 +1,561 @@
+import typing
+from ..core.client_wrapper import SyncClientWrapper
+from ..search.client import SearchClient
+from ..types.search_item import SearchItem
+from ..core.pagination import SyncPager, AsyncPager
+from ..core.client_wrapper import AsyncClientWrapper
+from ..core.pydantic_utilities import parse_obj_as
+from ..search.client import AsyncSearchClient
+from ..search.types.search_create_request_search_options_item import (
+    SearchCreateRequestSearchOptionsItem,
+)
+from ..search.types.search_create_request_group_by import SearchCreateRequestGroupBy
+from ..types.threshold_search import ThresholdSearch
+from ..search.types.search_create_request_sort_option import (
+    SearchCreateRequestSortOption,
+)
+from ..search.types.search_create_request_operator import SearchCreateRequestOperator
+from ..types.search_results import SearchResults
+from ..core.request_options import RequestOptions
+from .. import core
+from ..search.types.search_create_request_transcription_options_item import SearchCreateRequestTranscriptionOptionsItem
+
+OMIT = typing.cast(typing.Any, ...)
+
+
+class SearchClientWrapper(SearchClient):
+    def __init__(self, client_wrapper: SyncClientWrapper):
+        super().__init__(client_wrapper=client_wrapper)
+
+    def _get_next_page(self, page_token: str) -> SyncPager[SearchItem]:
+        _response = self._raw_client._client_wrapper.httpx_client.request(
+            f"search/{page_token}",
+            method="GET",
+        )
+        _parsed_response = typing.cast(
+            SearchResults,
+            parse_obj_as(
+                type_=SearchResults,
+                object_=_response.json(),
+            ),
+        )
+        _has_next = (
+            _parsed_response.page_info is not None
+            and _parsed_response.page_info.next_page_token is not None
+        )
+        _get_next = lambda: self._get_next_page(
+            _parsed_response.page_info.next_page_token  # type: ignore
+        )
+        _items = _parsed_response.data
+        return SyncPager(
+            has_next=_has_next, items=_items, get_next=_get_next, response=None
+        )
+
+    def query(
+        self,
+        *,
+        index_id: str,
+        search_options: typing.List[SearchCreateRequestSearchOptionsItem],
+        query_media_type: typing.Optional[typing.Literal["image"]] = OMIT,
+        query_media_url: typing.Optional[str] = OMIT,
+        query_media_file: typing.Optional[core.File] = OMIT,
+        query_text: typing.Optional[str] = OMIT,
+        adjust_confidence_level: typing.Optional[float] = OMIT,
+        group_by: typing.Optional[SearchCreateRequestGroupBy] = OMIT,
+        threshold: typing.Optional[ThresholdSearch] = OMIT,
+        sort_option: typing.Optional[SearchCreateRequestSortOption] = OMIT,
+        operator: typing.Optional[SearchCreateRequestOperator] = OMIT,
+        page_limit: typing.Optional[int] = OMIT,
+        filter: typing.Optional[str] = OMIT,
+        include_user_metadata: typing.Optional[bool] = OMIT,
+        transcription_options: typing.Optional[typing.List[SearchCreateRequestTranscriptionOptionsItem]] = OMIT,
+        request_options: typing.Optional[RequestOptions] = None,
+    ) -> SyncPager[SearchItem]:
+        """
+        Use this endpoint to search for relevant matches in an index using text, media, or a combination of both as your query.
+        
+        **Text queries**:
+        - Use the `query_text` parameter to specify your query.
+        
+        **Media queries**:
+        - Set the `query_media_type` parameter to the corresponding media type (example: `image`).
+        - Specify either one of the following parameters:
+          - `query_media_url`: Publicly accessible URL of your media file.
+          - `query_media_file`: Local media file.
+          If both `query_media_url` and `query_media_file` are specified in the same request, `query_media_url` takes precedence.
+        
+        **Composed text and media queries** (Marengo 3.0 only):
+        - Use the `query_text` parameter for your text query.
+        - Set `query_media_type` to `image`.
+        - Specify the image using either the `query_media_url` or the `query_media_file` parameter.
+        
+          Example: Provide an image of a car and include  "red color"  in your query to find red instances of that car model.
+        
+        <Note title="Note">
+          When using images in your search queries (either as media queries or in composed searches), ensure your image files meet the [format requirements](/v1.3/docs/concepts/models/marengo#image-file-requirements).
+        </Note>
+        
+        <Note title="Note">
+        This endpoint is rate-limited. For details, see the [Rate limits](/v1.3/docs/get-started/rate-limits) page.
+        </Note>
+        
+        Parameters
+        ----------
+        index_id : str
+            The unique identifier of the index to search.
+        
+        search_options : typing.List[SearchCreateRequestSearchOptionsItem]
+            Specifies the modalities the video understanding model uses to find relevant information.
+            
+            Available options:
+            - `visual`: Searches visual content.
+            - `audio`: Searches non-speech audio (Marengo 3.0) or all audio (Marengo 2.7).
+            - `transcription`: Spoken words (Marengo 3.0 only)
+            
+            <Note title="Note">
+            - You can specify multiple search options in conjunction with the [`operator`](/v1.3/api-reference/any-to-video-search/make-search-request#request.body.operator.operator) parameter described below to broaden or narrow your search. For example, to search using both visual and non-speech audio content, include this parameter two times in the request as shown below:
+              ```JSON
+              --form search_options=visual \
+              --form search_options=audio \
+              --form search_options=transcription \
+              ```
+            </Note>
+            
+            For detailed guidance and version-specific behavior, see the [Search options](/v1.3/docs/concepts/modalities#search-options) section.
+        
+        query_media_type : typing.Optional[typing.Literal["image"]]
+            The type of media you wish to use. This parameter is required for media queries. For example, to perform an image-based search, set this parameter to `image`. Use `query_text` together with this parameter when you want to perform a composed image+text search.
+        
+        query_media_url : typing.Optional[str]
+            The publicly accessible URL of the media file you wish to use. This parameter is required for media queries if `query_media_file` is not provided.
+        
+        query_media_file : typing.Optional[core.File]
+            See core.File for more documentation
+        
+        query_text : typing.Optional[str]
+            The text query to search for. This parameter is required for text queries. Note that the platform supports full natural language-based search. You can use this parameter together with `query_media_type` and `query_media_url` or `query_media_file` to perform a composed image+text search.
+            
+            
+            The maximum query length varies by model. Marengo 3.0 supports up to 500 tokens per query, while Marengo 2.7 supports up to 77 tokens per query.
+        
+        transcription_options : typing.Optional[typing.List[SearchCreateRequestTranscriptionOptionsItem]]
+            Specifies how the platform matches your text query with the words spoken in the video. This parameter applies only when using Marengo 3.0 with the `search_options` parameter containing the `transcription` value.
+            
+            Available options:
+            - `lexical`: Exact word matching
+            - `semantic`: Meaning-based matching
+            
+            For details on when to use each option, see the [Transcription options](/v1.3/docs/concepts/modalities#transcription-options) section.
+            
+            **Default**: `["lexical", "semantic"]`.
+        
+        adjust_confidence_level : typing.Optional[float]
+            <Info>
+              This parameter is deprecated in Marengo 3.0 and newer versions. Use the [`rank`](/v1.3/api-reference/any-to-video-search/make-search-request#response.body.data.rank) field in the response instead, which indicates the relevance ranking assigned by the model.
+            </Info>
+            This parameter specifies the strictness of the thresholds for assigning the high, medium, or low confidence levels to search results. If you use a lower value, the thresholds become more relaxed, and more search results will be classified as having high, medium, or low confidence levels. You can use this parameter to include a broader range of potentially relevant video clips, even if some results might be less precise.
+            
+            **Min**: 0
+            **Max**: 1
+            **Default:** 0.5
+        
+        group_by : typing.Optional[SearchCreateRequestGroupBy]
+            Use this parameter to group or ungroup items in a response. It can take one of the following values:
+            - `video`:  The platform will group the matching video clips in the response by video.
+            - `clip`: The matching video clips in the response will not be grouped.
+            
+            **Default:** `clip`
+        
+        threshold : typing.Optional[ThresholdSearch]
+        
+        sort_option : typing.Optional[SearchCreateRequestSortOption]
+            <Info>
+              This parameter is deprecated in Marengo 3.0 and newer versions. Use the [`rank`](/v1.3/api-reference/any-to-video-search/make-search-request#response.body.data.rank) field in the response instead, which indicates the relevance ranking assigned by the model.
+            </Info>
+            
+            Use this parameter to specify the sort order for the response.
+            
+            When performing a search, the platform assigns a relevance ranking to each video clip that matches your search terms. By default, the search results are sorted by relevance ranking in ascending order, with 1 being the most relevant result.
+            
+            If you set this parameter to `score` and `group_by` is set to `video`, the platform will determine the highest relevance ranking (lowest number) for each video and sort the videos in the response by this ranking. For each video, the matching video clips will be sorted by relevance ranking in ascending order.
+            
+            If you set this parameter to `clip_count` and `group_by` is set to `video`, the platform will sort the videos in the response by the number of clips. For each video, the matching video clips will be sorted by relevance ranking in ascending order. You can use `clip_count` only when the matching video clips are grouped by video.
+            
+            
+            **Default:** `score`
+        
+        operator : typing.Optional[SearchCreateRequestOperator]
+            Combines multiple search options using `or` or `and`. Use `and` to find segments matching all search options. Use `or` to find segments matching any search option. For detailed guidance on using this parameter, see the [Combine multiple modalities](/v1.3/docs/concepts/modalities#combine-multiple-modalities) section.
+            
+            **Default**: `or`.
+        
+        page_limit : typing.Optional[int]
+            The number of items to return on each page. When grouping by video, this parameter represents the number of videos per page. Otherwise, it represents the maximum number of video clips per page.
+            
+            **Max**: `50`.
+        
+        filter : typing.Optional[str]
+            Specifies a stringified JSON object to filter your search results. Supports both system-generated metadata (example: video ID, duration) and user-defined metadata.
+            
+            **Syntax for filtering**
+            
+            The following table describes the supported data types, operators, and filter syntax:
+            
+            | Data type | Operator | Description | Syntax |
+            |:----------|:---------|:------------|:-------|
+            | String | `=` | Matches results equal to the specified value. | `{"field": "value"}`
+            | Array of strings | `=` | Matches results with any value in the specified array. Supported only for `id`. | `{"id": ["value1", "value2"]}` |
+            | Numeric (integer, float) | `=`, `lte`, `gte` | Matches results equal to or within a range of the specified value. | `{"field": number}` or `{"field": { "gte": number, "lte": number }}` |
+            | Boolean | `=` | Matches results equal to the specified boolean value. | `{"field": true}` or `{"field": false}`. |
+            
+            <br/>
+            **System-generated metadata**
+            
+            The table below describes the system-generated metadata available for filtering your  search results:
+            
+            | Field name | Description | Type | Example |
+            |:-----------|:------------|:-----|:--------|
+            | `id` | Filters by specific video IDs. | Array of strings | `{"id": ["67cec9caf45d9b64a58340fc", "67cec9baf45d9b64a58340fa"]}`. |
+            | `duration` | Filters based on the duration of the video containing the segment that matches your query. | Number or object with `gte` and `lte` | `{"duration": 600}` or `{"duration": { "gte": 600, "lte": 800 }}` |
+            | `width` | Filters by video width (in pixels). | Number or object with `gte` and `lte` | `{"width": 1920}` or `{"width": { "gte": 1280, "lte": 1920}}` |
+            | `height` | Filters by video height (in pixels). | Number or object with `gte` and `lte`. | `{"height": 1080}` or `{"height": { "gte": 720, "lte": 1080 }}`. |
+            | `size` | Filters by video size (in bytes) | Number or object with `gte` and `lte`. | `{"size": 1048576}` or `{"size": { "gte": 1048576, "lte": 5242880}}` |
+            | `filename` | Filters by the exact file name. | String | `{"filename": "Animal Encounters part 1"}` |
+            
+            <br/>
+            **User-defined metadata**
+            
+            To filter by user-defined metadata:
+            1. Add metadata to your video by calling the [`PUT`](/v1.3/api-reference/videos/update) method of the `/indexes/:index-id/videos/:video-id` endpoint
+            2. Reference the custom field in your filter object. For example, to filter videos where a custom field named `needsReview` of type boolean is `true`, use `{"needs_review": true}`.
+            
+            For more details and examples, see the [Filter search results](/v1.3/docs/guides/search/filtering) page.
+        
+        include_user_metadata : typing.Optional[bool]
+            Specifies whether to include user-defined metadata in the search results.
+        
+        request_options : typing.Optional[RequestOptions]
+            Request-specific configuration.
+        
+        Returns
+        -------
+        SearchResults
+            Successfully performed a search request.
+        
+        Examples
+        --------
+        from twelvelabs import TwelveLabs
+        
+        client = TwelveLabs(
+            api_key="YOUR_API_KEY",
+        )
+        client.search.create(
+            index_id="index_id",
+            search_options=["visual"],
+        )
+        """
+
+        _response = self.create(
+            index_id=index_id,
+            search_options=search_options,
+            query_media_type=query_media_type,
+            query_media_url=query_media_url,
+            query_media_file=query_media_file,
+            query_text=query_text,
+            adjust_confidence_level=adjust_confidence_level,
+            group_by=group_by,
+            threshold=threshold,
+            sort_option=sort_option,
+            operator=operator,
+            page_limit=page_limit,
+            filter=filter,
+            include_user_metadata=include_user_metadata,
+            transcription_options=transcription_options,
+            request_options=request_options,
+        )
+
+        _has_next = (
+            _response.page_info is not None
+            and _response.page_info.next_page_token is not None
+        )
+        _get_next = lambda: self._get_next_page(_response.page_info.next_page_token)  # type: ignore
+        _items = _response.data
+        return SyncPager(
+            has_next=_has_next, items=_items, get_next=_get_next, response=None
+        )
+
+    def __getattr__(self, item):
+        return getattr(self.client_wrapper, item)
+
+
+class AsyncSearchClientWrapper(AsyncSearchClient):
+    def __init__(self, client_wrapper: AsyncClientWrapper):
+        super().__init__(client_wrapper=client_wrapper)
+
+    async def _get_next_page(self, page_token: str) -> AsyncPager[SearchItem]:
+        _response = await self._raw_client._client_wrapper.httpx_client.request(
+            f"search/{page_token}",
+            method="GET",
+        )
+        _parsed_response = typing.cast(
+            SearchResults,
+            parse_obj_as(
+                type_=SearchResults,
+                object_=_response.json(),
+            ),
+        )
+        _has_next = (
+            _parsed_response.page_info is not None
+            and _parsed_response.page_info.next_page_token is not None
+        )
+        _get_next = lambda: self._get_next_page(
+            _parsed_response.page_info.next_page_token  # type: ignore
+        )
+        _items = _parsed_response.data
+        return AsyncPager(
+            has_next=_has_next, items=_items, get_next=_get_next, response=None
+        )
+
+    async def query(
+        self,
+        *,
+        index_id: str,
+        search_options: typing.List[SearchCreateRequestSearchOptionsItem],
+        query_media_type: typing.Optional[typing.Literal["image"]] = OMIT,
+        query_media_url: typing.Optional[str] = OMIT,
+        query_media_file: typing.Optional[core.File] = OMIT,
+        query_text: typing.Optional[str] = OMIT,
+        adjust_confidence_level: typing.Optional[float] = OMIT,
+        group_by: typing.Optional[SearchCreateRequestGroupBy] = OMIT,
+        threshold: typing.Optional[ThresholdSearch] = OMIT,
+        sort_option: typing.Optional[SearchCreateRequestSortOption] = OMIT,
+        operator: typing.Optional[SearchCreateRequestOperator] = OMIT,
+        page_limit: typing.Optional[int] = OMIT,
+        filter: typing.Optional[str] = OMIT,
+        include_user_metadata: typing.Optional[bool] = OMIT,
+        transcription_options: typing.Optional[typing.List[SearchCreateRequestTranscriptionOptionsItem]] = OMIT,
+        request_options: typing.Optional[RequestOptions] = None,
+    ) -> AsyncPager[SearchItem]:
+        """
+        Use this endpoint to search for relevant matches in an index using text, media, or a combination of both as your query.
+        
+        **Text queries**:
+        - Use the `query_text` parameter to specify your query.
+        
+        **Media queries**:
+        - Set the `query_media_type` parameter to the corresponding media type (example: `image`).
+        - Specify either one of the following parameters:
+          - `query_media_url`: Publicly accessible URL of your media file.
+          - `query_media_file`: Local media file.
+          If both `query_media_url` and `query_media_file` are specified in the same request, `query_media_url` takes precedence.
+        
+        **Composed text and media queries** (Marengo 3.0 only):
+        - Use the `query_text` parameter for your text query.
+        - Set `query_media_type` to `image`.
+        - Specify the image using either the `query_media_url` or the `query_media_file` parameter.
+        
+          Example: Provide an image of a car and include  "red color"  in your query to find red instances of that car model.
+        
+        <Note title="Note">
+          When using images in your search queries (either as media queries or in composed searches), ensure your image files meet the [format requirements](/v1.3/docs/concepts/models/marengo#image-file-requirements).
+        </Note>
+        
+        <Note title="Note">
+        This endpoint is rate-limited. For details, see the [Rate limits](/v1.3/docs/get-started/rate-limits) page.
+        </Note>
+        
+        Parameters
+        ----------
+        index_id : str
+            The unique identifier of the index to search.
+        
+        search_options : typing.List[SearchCreateRequestSearchOptionsItem]
+            Specifies the modalities the video understanding model uses to find relevant information.
+            
+            Available options:
+            - `visual`: Searches visual content.
+            - `audio`: Searches non-speech audio (Marengo 3.0) or all audio (Marengo 2.7).
+            - `transcription`: Spoken words (Marengo 3.0 only)
+            
+            <Note title="Note">
+            - You can specify multiple search options in conjunction with the [`operator`](/v1.3/api-reference/any-to-video-search/make-search-request#request.body.operator.operator) parameter described below to broaden or narrow your search. For example, to search using both visual and non-speech audio content, include this parameter two times in the request as shown below:
+              ```JSON
+              --form search_options=visual \
+              --form search_options=audio \
+              --form search_options=transcription \
+              ```
+            </Note>
+            
+            For detailed guidance and version-specific behavior, see the [Search options](/v1.3/docs/concepts/modalities#search-options) section.
+        
+        query_media_type : typing.Optional[typing.Literal["image"]]
+            The type of media you wish to use. This parameter is required for media queries. For example, to perform an image-based search, set this parameter to `image`. Use `query_text` together with this parameter when you want to perform a composed image+text search.
+        
+        query_media_url : typing.Optional[str]
+            The publicly accessible URL of the media file you wish to use. This parameter is required for media queries if `query_media_file` is not provided.
+        
+        query_media_file : typing.Optional[core.File]
+            See core.File for more documentation
+        
+        query_text : typing.Optional[str]
+            The text query to search for. This parameter is required for text queries. Note that the platform supports full natural language-based search. You can use this parameter together with `query_media_type` and `query_media_url` or `query_media_file` to perform a composed image+text search.
+            
+            
+            The maximum query length varies by model. Marengo 3.0 supports up to 500 tokens per query, while Marengo 2.7 supports up to 77 tokens per query.
+        
+        transcription_options : typing.Optional[typing.List[SearchCreateRequestTranscriptionOptionsItem]]
+            Specifies how the platform matches your text query with the words spoken in the video. This parameter applies only when using Marengo 3.0 with the `search_options` parameter containing the `transcription` value.
+            
+            Available options:
+            - `lexical`: Exact word matching
+            - `semantic`: Meaning-based matching
+            
+            For details on when to use each option, see the [Transcription options](/v1.3/docs/concepts/modalities#transcription-options) section.
+            
+            **Default**: `["lexical", "semantic"]`.
+        
+        adjust_confidence_level : typing.Optional[float]
+            <Info>
+              This parameter is deprecated in Marengo 3.0 and newer versions. Use the [`rank`](/v1.3/api-reference/any-to-video-search/make-search-request#response.body.data.rank) field in the response instead, which indicates the relevance ranking assigned by the model.
+            </Info>
+            This parameter specifies the strictness of the thresholds for assigning the high, medium, or low confidence levels to search results. If you use a lower value, the thresholds become more relaxed, and more search results will be classified as having high, medium, or low confidence levels. You can use this parameter to include a broader range of potentially relevant video clips, even if some results might be less precise.
+            
+            **Min**: 0
+            **Max**: 1
+            **Default:** 0.5
+        
+        group_by : typing.Optional[SearchCreateRequestGroupBy]
+            Use this parameter to group or ungroup items in a response. It can take one of the following values:
+            - `video`:  The platform will group the matching video clips in the response by video.
+            - `clip`: The matching video clips in the response will not be grouped.
+            
+            **Default:** `clip`
+        
+        threshold : typing.Optional[ThresholdSearch]
+        
+        sort_option : typing.Optional[SearchCreateRequestSortOption]
+            <Info>
+              This parameter is deprecated in Marengo 3.0 and newer versions. Use the [`rank`](/v1.3/api-reference/any-to-video-search/make-search-request#response.body.data.rank) field in the response instead, which indicates the relevance ranking assigned by the model.
+            </Info>
+            
+            Use this parameter to specify the sort order for the response.
+            
+            When performing a search, the platform assigns a relevance ranking to each video clip that matches your search terms. By default, the search results are sorted by relevance ranking in ascending order, with 1 being the most relevant result.
+            
+            If you set this parameter to `score` and `group_by` is set to `video`, the platform will determine the highest relevance ranking (lowest number) for each video and sort the videos in the response by this ranking. For each video, the matching video clips will be sorted by relevance ranking in ascending order.
+            
+            If you set this parameter to `clip_count` and `group_by` is set to `video`, the platform will sort the videos in the response by the number of clips. For each video, the matching video clips will be sorted by relevance ranking in ascending order. You can use `clip_count` only when the matching video clips are grouped by video.
+            
+            
+            **Default:** `score`
+        
+        operator : typing.Optional[SearchCreateRequestOperator]
+            Combines multiple search options using `or` or `and`. Use `and` to find segments matching all search options. Use `or` to find segments matching any search option. For detailed guidance on using this parameter, see the [Combine multiple modalities](/v1.3/docs/concepts/modalities#combine-multiple-modalities) section.
+            
+            **Default**: `or`.
+        
+        page_limit : typing.Optional[int]
+            The number of items to return on each page. When grouping by video, this parameter represents the number of videos per page. Otherwise, it represents the maximum number of video clips per page.
+            
+            **Max**: `50`.
+        
+        filter : typing.Optional[str]
+            Specifies a stringified JSON object to filter your search results. Supports both system-generated metadata (example: video ID, duration) and user-defined metadata.
+            
+            **Syntax for filtering**
+            
+            The following table describes the supported data types, operators, and filter syntax:
+            
+            | Data type | Operator | Description | Syntax |
+            |:----------|:---------|:------------|:-------|
+            | String | `=` | Matches results equal to the specified value. | `{"field": "value"}`
+            | Array of strings | `=` | Matches results with any value in the specified array. Supported only for `id`. | `{"id": ["value1", "value2"]}` |
+            | Numeric (integer, float) | `=`, `lte`, `gte` | Matches results equal to or within a range of the specified value. | `{"field": number}` or `{"field": { "gte": number, "lte": number }}` |
+            | Boolean | `=` | Matches results equal to the specified boolean value. | `{"field": true}` or `{"field": false}`. |
+            
+            <br/>
+            **System-generated metadata**
+            
+            The table below describes the system-generated metadata available for filtering your  search results:
+            
+            | Field name | Description | Type | Example |
+            |:-----------|:------------|:-----|:--------|
+            | `id` | Filters by specific video IDs. | Array of strings | `{"id": ["67cec9caf45d9b64a58340fc", "67cec9baf45d9b64a58340fa"]}`. |
+            | `duration` | Filters based on the duration of the video containing the segment that matches your query. | Number or object with `gte` and `lte` | `{"duration": 600}` or `{"duration": { "gte": 600, "lte": 800 }}` |
+            | `width` | Filters by video width (in pixels). | Number or object with `gte` and `lte` | `{"width": 1920}` or `{"width": { "gte": 1280, "lte": 1920}}` |
+            | `height` | Filters by video height (in pixels). | Number or object with `gte` and `lte`. | `{"height": 1080}` or `{"height": { "gte": 720, "lte": 1080 }}`. |
+            | `size` | Filters by video size (in bytes) | Number or object with `gte` and `lte`. | `{"size": 1048576}` or `{"size": { "gte": 1048576, "lte": 5242880}}` |
+            | `filename` | Filters by the exact file name. | String | `{"filename": "Animal Encounters part 1"}` |
+            
+            <br/>
+            **User-defined metadata**
+            
+            To filter by user-defined metadata:
+            1. Add metadata to your video by calling the [`PUT`](/v1.3/api-reference/videos/update) method of the `/indexes/:index-id/videos/:video-id` endpoint
+            2. Reference the custom field in your filter object. For example, to filter videos where a custom field named `needsReview` of type boolean is `true`, use `{"needs_review": true}`.
+            
+            For more details and examples, see the [Filter search results](/v1.3/docs/guides/search/filtering) page.
+        
+        include_user_metadata : typing.Optional[bool]
+            Specifies whether to include user-defined metadata in the search results.
+        
+        request_options : typing.Optional[RequestOptions]
+            Request-specific configuration.
+        
+        Returns
+        -------
+        SearchResults
+            Successfully performed a search request.
+        
+        Examples
+        --------
+        import asyncio
+        
+        from twelvelabs import AsyncTwelveLabs
+        
+        client = AsyncTwelveLabs(
+            api_key="YOUR_API_KEY",
+        )
+        
+        
+        async def main() -> None:
+            await client.search.create(
+                index_id="index_id",
+                search_options=["visual"],
+            )
+        
+        
+        asyncio.run(main())
+        """
+
+        _response = await self.create(
+            index_id=index_id,
+            search_options=search_options,
+            query_media_type=query_media_type,
+            query_media_url=query_media_url,
+            query_media_file=query_media_file,
+            query_text=query_text,
+            adjust_confidence_level=adjust_confidence_level,
+            group_by=group_by,
+            threshold=threshold,
+            sort_option=sort_option,
+            operator=operator,
+            page_limit=page_limit,
+            filter=filter,
+            include_user_metadata=include_user_metadata,
+            transcription_options=transcription_options,
+            request_options=request_options,
+        )
+
+        _has_next = (
+            _response.page_info is not None
+            and _response.page_info.next_page_token is not None
+        )
+        _get_next = lambda: self._get_next_page(_response.page_info.next_page_token)  # type: ignore
+        _items = _response.data
+        return AsyncPager(
+            has_next=_has_next, items=_items, get_next=_get_next, response=None
+        )
+
+    def __getattr__(self, item):
+        return getattr(self.client_wrapper, item)

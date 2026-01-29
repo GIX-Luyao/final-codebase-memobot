@@ -26,7 +26,7 @@ match_face = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(match_face)
 
 # Import database utilities
-from onboarding.database import get_person_by_face_id, init_database
+from utils.database import get_person_by_face_id, init_database
 
 # Face matching configuration (matching ingest_pipeline settings)
 FACE_MODEL = "ArcFace"
