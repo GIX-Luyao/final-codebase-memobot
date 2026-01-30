@@ -148,7 +148,7 @@ class RealtimeAgent:
         
         # 1. Query Vector Database (existing logic)
         try:
-            from query import retrieve_and_rank
+            from query_pipeline.query import retrieve_and_rank
             
             print(f"[DEBUG] Querying vector DB with: {query}")
             
@@ -335,7 +335,7 @@ class RealtimeAgent:
         print("🔑 Getting ephemeral token...")
         token = await self.get_ephemeral_token()
         
-        url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
+        url = "wss://api.openai.com/v1/realtime?model=gpt-realtime-mini"
         headers = {
             "Authorization": f"Bearer {token}",
             "OpenAI-Beta": "realtime=v1",
