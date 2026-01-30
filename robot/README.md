@@ -303,3 +303,7 @@ ws.send(json.dumps({"type": "say", "text": "Hello from remote control"}))
 ## License
 
 See main project LICENSE file.
+
+COMMAND TO RUN SERVER:
+python3 robot/mac_master_v3.py --realtime --user-name "Jason Yang"
+python3 robot/mac_master_v4.py --realtime
