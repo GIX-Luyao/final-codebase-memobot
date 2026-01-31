@@ -152,7 +152,7 @@ class ServerRealtimeAgent(RealtimeAgent):
         self.playback_end_time = 0.0
         self.state_lock = threading.Lock()
         self.out_buffer = bytearray()
-        
+        self.session_connected = False  # Set True when websocket session.created
         # Initialize Noise Filter
         self.noise_filter = RealtimeFilter(FILTER_LOW_CUT, FILTER_HIGH_CUT, ROBOT_RATE)
 
@@ -183,6 +183,7 @@ class ServerRealtimeAgent(RealtimeAgent):
                 event_type = event.get("type", "")
 
                 if event_type == "session.created":
+                    self.session_connected = True
                     print("🎙️  Session started. Robot is listening...")
                 
                 elif event_type == "response.audio.delta":

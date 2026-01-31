@@ -143,7 +143,8 @@ def recognize_user(image_path=None):
         # Also output as a dictionary for programmatic use
         print(f"\n=== Full Record (dict) ===")
         print(person)
-        
+        # Include distance for confidence checks (lower = better for cosine)
+        person["distance"] = distance
         return person
         
     except Exception as e:
