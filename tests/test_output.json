@@ -1,0 +1,63 @@
+[
+  {
+    "query": "Who taught the robot how to wave hello?",
+    "person_name": "Alice",
+    "person_id": "user_alice_001",
+    "expected_answer": {
+      "summary": "Alice taught the robot how to wave hello.",
+      "details": [
+        "Alice instructed the robot on how to wave hello"
+      ]
+    }
+  },
+  {
+    "query": "How should the robot wave hello?",
+    "person_name": "Alice",
+    "person_id": "user_alice_001",
+    "expected_answer": {
+      "summary": "The robot should wave hello using a friendly gesture.",
+      "details": [
+        "Raise the right arm to shoulder height",
+        "Wave the hand left and right a few times",
+        "Smile while waving to appear friendly"
+      ]
+    }
+  },
+  {
+    "query": "What personal preferences has Bob shared with the robot?",
+    "person_name": "Bob",
+    "person_id": "user_bob_001",
+    "expected_answer": {
+      "summary": "Bob shared his drink preferences and a reminder request.",
+      "details": [
+        "Bob's favorite drink is coffee",
+        "Bob prefers his coffee black",
+        "Bob wants the robot to remind him to drink water in the afternoon"
+      ]
+    }
+  },
+  {
+    "query": "Who asked the robot to greet guests politely and maintain eye contact?",
+    "person_name": "Charlie",
+    "person_id": "user_charlie_001",
+    "expected_answer": {
+      "summary": "Charlie asked the robot to greet guests politely and maintain eye contact.",
+      "details": [
+        "Greet guests politely",
+        "Maintain eye contact when saying hello"
+      ]
+    }
+  },
+  {
+    "query": "Who prefers coffee black?",
+    "person_name": "Bob",
+    "person_id": "user_bob_001",
+    "expected_answer": {
+      "summary": "Bob prefers his coffee black.",
+      "details": [
+        "Favorite drink is coffee",
+        "Prefers coffee without milk or sugar"
+      ]
+    }
+  }
+]
