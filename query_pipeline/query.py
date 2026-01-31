@@ -197,7 +197,17 @@ def retrieve_and_rank(
 
     # 6. Sort by final_score descending
     results.sort(key=lambda x: x["final_score"], reverse=True)
-    return results
+
+    # 7. Deduplicate by pegasus_video_id: keep only the best-scoring entry per video
+    seen_pegasus_video_ids = set()
+    deduped = []
+    for r in results:
+        vid = (r.get("metadata") or {}).get("pegasus_video_id")
+        if vid is None or vid not in seen_pegasus_video_ids:
+            deduped.append(r)
+            if vid is not None:
+                seen_pegasus_video_ids.add(vid)
+    return deduped
 
 
 # --------- CLI ENTRYPOINT ---------
