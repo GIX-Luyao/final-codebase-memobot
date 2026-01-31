@@ -1,0 +1,551 @@
+{
+  "meta": {
+    "group_id": "pytest_805dc171bf",
+    "generated_at_utc": "2026-01-31T02:01:14.070122Z",
+    "dotenv_path": "/Users/cathy/Desktop/Local Code/memobot/.env",
+    "test_data_path": "/Users/cathy/Desktop/Local Code/memobot/tests/test_data.json",
+    "test_output_path": "/Users/cathy/Desktop/Local Code/memobot/tests/test_output.json"
+  },
+  "cases": [
+    {
+      "idx": 0,
+      "query": "Who taught the robot how to wave hello?",
+      "person_id": "user_alice_001",
+      "expected_answer": {
+        "summary": "Alice taught the robot how to wave hello.",
+        "details": [
+          "Alice instructed the robot on how to wave hello"
+        ]
+      },
+      "search_result": {
+        "center_person": {
+          "type": "Person",
+          "uuid": "user_alice_001",
+          "name": "Alice",
+          "person_id": "user_alice_001",
+          "profile": null,
+          "face_id": null,
+          "voice_id": null,
+          "gender": null,
+          "updated_at": "2026-01-31T02:01:18.515118+00:00"
+        },
+        "action": null,
+        "events": [
+          {
+            "type": "Event",
+            "uuid": "log_1769824876_user_alice_001",
+            "name": "Hi robot, I want to teach you how to wave hello. It's a friendly gesture. First raise your right arm to shoulder height, then wave your hand left and right a few times.",
+            "summary": "Hi robot, I want to teach you how to wave hello. It's a friendly gesture. First raise your right arm to shoulder height, then wave your hand left and right a few times.",
+            "person_id": "user_alice_001",
+            "payload": "{\"id\": \"log_1769824876_user_alice_001\", \"person_name\": \"Alice\", \"person_id\": \"user_alice_001\", \"text\": \"Hi robot, I want to teach you how to wave hello. It's a friendly gesture. First raise your right arm to shoulder height, then wave your hand left and right a few times.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:16.210161+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824878_user_alice_001",
+            "name": "Alice also mentioned the robot should smile when waving to seem friendly.",
+            "summary": "Alice also mentioned the robot should smile when waving to seem friendly.",
+            "person_id": "user_alice_001",
+            "payload": "{\"id\": \"log_1769824878_user_alice_001\", \"person_name\": \"Alice\", \"person_id\": \"user_alice_001\", \"text\": \"Alice also mentioned the robot should smile when waving to seem friendly.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:18.515132+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824879_user_charlie_001",
+            "name": "Charlie asked the robot to greet guests politely and maintain eye contact when saying hello.",
+            "summary": "Charlie asked the robot to greet guests politely and maintain eye contact when saying hello.",
+            "person_id": "user_charlie_001",
+            "payload": "{\"id\": \"log_1769824879_user_charlie_001\", \"person_name\": \"Charlie\", \"person_id\": \"user_charlie_001\", \"text\": \"Charlie asked the robot to greet guests politely and maintain eye contact when saying hello.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:19.572782+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824880_user_bob_001",
+            "name": "Bob said the robot should remind him to drink water in the afternoon because he often forgets.",
+            "summary": "Bob said the robot should remind him to drink water in the afternoon because he often forgets.",
+            "person_id": "user_bob_001",
+            "payload": "{\"id\": \"log_1769824880_user_bob_001\", \"person_name\": \"Bob\", \"person_id\": \"user_bob_001\", \"text\": \"Bob said the robot should remind him to drink water in the afternoon because he often forgets.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:20.530064+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824877_user_bob_001",
+            "name": "Bob told the robot his favorite drink is coffee and he prefers it black.",
+            "summary": "Bob told the robot his favorite drink is coffee and he prefers it black.",
+            "person_id": "user_bob_001",
+            "payload": "{\"id\": \"log_1769824877_user_bob_001\", \"person_name\": \"Bob\", \"person_id\": \"user_bob_001\", \"text\": \"Bob told the robot his favorite drink is coffee and he prefers it black.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:17.622723+00:00",
+            "distance": null
+          }
+        ],
+        "persons": [
+          {
+            "type": "Person",
+            "uuid": "user_bob_001",
+            "name": "Bob",
+            "person_id": "user_bob_001",
+            "profile": null,
+            "face_id": null,
+            "voice_id": null,
+            "gender": null,
+            "updated_at": "2026-01-31T02:01:20.530015+00:00",
+            "distance": null
+          },
+          {
+            "type": "Person",
+            "uuid": "user_charlie_001",
+            "name": "Charlie",
+            "person_id": "user_charlie_001",
+            "profile": null,
+            "face_id": null,
+            "voice_id": null,
+            "gender": null,
+            "updated_at": "2026-01-31T02:01:19.572734+00:00",
+            "distance": null
+          }
+        ],
+        "query": "Who taught the robot how to wave hello?",
+        "person_id": "user_alice_001",
+        "facts": [
+          {
+            "type": "Fact",
+            "uuid": "fa9439d8-f5d1-4565-991d-5cf1183adac2",
+            "content": "Alice reported: Hi robot, I want to teach you how to wave hello. It's a friendly gesture. First raise your right arm to shoulder height, then wave your hand left and right a few times.",
+            "score": null
+          },
+          {
+            "type": "Fact",
+            "uuid": "f4d9a2c3-59ca-4042-95f4-df246a7b11bc",
+            "content": "Alice reported: Alice also mentioned the robot should smile when waving to seem friendly.",
+            "score": null
+          },
+          {
+            "type": "Fact",
+            "uuid": "2c072c26-dcdd-47d4-a1cd-c27fd0a83d47",
+            "content": "Charlie reported: Charlie asked the robot to greet guests politely and maintain eye contact when saying hello.",
+            "score": null
+          }
+        ]
+      },
+      "ok": true,
+      "error": null
+    },
+    {
+      "idx": 1,
+      "query": "How should the robot wave hello?",
+      "person_id": "user_alice_001",
+      "expected_answer": {
+        "summary": "The robot should wave hello using a friendly gesture.",
+        "details": [
+          "Raise the right arm to shoulder height",
+          "Wave the hand left and right a few times",
+          "Smile while waving to appear friendly"
+        ]
+      },
+      "search_result": {
+        "center_person": {
+          "type": "Person",
+          "uuid": "user_alice_001",
+          "name": "Alice",
+          "person_id": "user_alice_001",
+          "profile": null,
+          "face_id": null,
+          "voice_id": null,
+          "gender": null,
+          "updated_at": "2026-01-31T02:01:18.515118+00:00"
+        },
+        "action": null,
+        "events": [
+          {
+            "type": "Event",
+            "uuid": "log_1769824876_user_alice_001",
+            "name": "Hi robot, I want to teach you how to wave hello. It's a friendly gesture. First raise your right arm to shoulder height, then wave your hand left and right a few times.",
+            "summary": "Hi robot, I want to teach you how to wave hello. It's a friendly gesture. First raise your right arm to shoulder height, then wave your hand left and right a few times.",
+            "person_id": "user_alice_001",
+            "payload": "{\"id\": \"log_1769824876_user_alice_001\", \"person_name\": \"Alice\", \"person_id\": \"user_alice_001\", \"text\": \"Hi robot, I want to teach you how to wave hello. It's a friendly gesture. First raise your right arm to shoulder height, then wave your hand left and right a few times.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:16.210161+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824878_user_alice_001",
+            "name": "Alice also mentioned the robot should smile when waving to seem friendly.",
+            "summary": "Alice also mentioned the robot should smile when waving to seem friendly.",
+            "person_id": "user_alice_001",
+            "payload": "{\"id\": \"log_1769824878_user_alice_001\", \"person_name\": \"Alice\", \"person_id\": \"user_alice_001\", \"text\": \"Alice also mentioned the robot should smile when waving to seem friendly.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:18.515132+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824879_user_charlie_001",
+            "name": "Charlie asked the robot to greet guests politely and maintain eye contact when saying hello.",
+            "summary": "Charlie asked the robot to greet guests politely and maintain eye contact when saying hello.",
+            "person_id": "user_charlie_001",
+            "payload": "{\"id\": \"log_1769824879_user_charlie_001\", \"person_name\": \"Charlie\", \"person_id\": \"user_charlie_001\", \"text\": \"Charlie asked the robot to greet guests politely and maintain eye contact when saying hello.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:19.572782+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824880_user_bob_001",
+            "name": "Bob said the robot should remind him to drink water in the afternoon because he often forgets.",
+            "summary": "Bob said the robot should remind him to drink water in the afternoon because he often forgets.",
+            "person_id": "user_bob_001",
+            "payload": "{\"id\": \"log_1769824880_user_bob_001\", \"person_name\": \"Bob\", \"person_id\": \"user_bob_001\", \"text\": \"Bob said the robot should remind him to drink water in the afternoon because he often forgets.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:20.530064+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824877_user_bob_001",
+            "name": "Bob told the robot his favorite drink is coffee and he prefers it black.",
+            "summary": "Bob told the robot his favorite drink is coffee and he prefers it black.",
+            "person_id": "user_bob_001",
+            "payload": "{\"id\": \"log_1769824877_user_bob_001\", \"person_name\": \"Bob\", \"person_id\": \"user_bob_001\", \"text\": \"Bob told the robot his favorite drink is coffee and he prefers it black.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:17.622723+00:00",
+            "distance": null
+          }
+        ],
+        "persons": [
+          {
+            "type": "Person",
+            "uuid": "user_bob_001",
+            "name": "Bob",
+            "person_id": "user_bob_001",
+            "profile": null,
+            "face_id": null,
+            "voice_id": null,
+            "gender": null,
+            "updated_at": "2026-01-31T02:01:20.530015+00:00",
+            "distance": null
+          }
+        ],
+        "query": "How should the robot wave hello?",
+        "person_id": "user_alice_001",
+        "facts": [
+          {
+            "type": "Fact",
+            "uuid": "fa9439d8-f5d1-4565-991d-5cf1183adac2",
+            "content": "Alice reported: Hi robot, I want to teach you how to wave hello. It's a friendly gesture. First raise your right arm to shoulder height, then wave your hand left and right a few times.",
+            "score": null
+          },
+          {
+            "type": "Fact",
+            "uuid": "f4d9a2c3-59ca-4042-95f4-df246a7b11bc",
+            "content": "Alice reported: Alice also mentioned the robot should smile when waving to seem friendly.",
+            "score": null
+          },
+          {
+            "type": "Fact",
+            "uuid": "4ffe7fba-0c73-4cf2-a0eb-a9e523754fcd",
+            "content": "Bob reported: Bob said the robot should remind him to drink water in the afternoon because he often forgets.",
+            "score": null
+          }
+        ]
+      },
+      "ok": true,
+      "error": null
+    },
+    {
+      "idx": 2,
+      "query": "What personal preferences has Bob shared with the robot?",
+      "person_id": "user_bob_001",
+      "expected_answer": {
+        "summary": "Bob shared his drink preferences and a reminder request.",
+        "details": [
+          "Bob's favorite drink is coffee",
+          "Bob prefers his coffee black",
+          "Bob wants the robot to remind him to drink water in the afternoon"
+        ]
+      },
+      "search_result": {
+        "center_person": {
+          "type": "Person",
+          "uuid": "user_bob_001",
+          "name": "Bob",
+          "person_id": "user_bob_001",
+          "profile": null,
+          "face_id": null,
+          "voice_id": null,
+          "gender": null,
+          "updated_at": "2026-01-31T02:01:20.530015+00:00"
+        },
+        "action": null,
+        "events": [
+          {
+            "type": "Event",
+            "uuid": "log_1769824880_user_bob_001",
+            "name": "Bob said the robot should remind him to drink water in the afternoon because he often forgets.",
+            "summary": "Bob said the robot should remind him to drink water in the afternoon because he often forgets.",
+            "person_id": "user_bob_001",
+            "payload": "{\"id\": \"log_1769824880_user_bob_001\", \"person_name\": \"Bob\", \"person_id\": \"user_bob_001\", \"text\": \"Bob said the robot should remind him to drink water in the afternoon because he often forgets.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:20.530064+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824877_user_bob_001",
+            "name": "Bob told the robot his favorite drink is coffee and he prefers it black.",
+            "summary": "Bob told the robot his favorite drink is coffee and he prefers it black.",
+            "person_id": "user_bob_001",
+            "payload": "{\"id\": \"log_1769824877_user_bob_001\", \"person_name\": \"Bob\", \"person_id\": \"user_bob_001\", \"text\": \"Bob told the robot his favorite drink is coffee and he prefers it black.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:17.622723+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824879_user_charlie_001",
+            "name": "Charlie asked the robot to greet guests politely and maintain eye contact when saying hello.",
+            "summary": "Charlie asked the robot to greet guests politely and maintain eye contact when saying hello.",
+            "person_id": "user_charlie_001",
+            "payload": "{\"id\": \"log_1769824879_user_charlie_001\", \"person_name\": \"Charlie\", \"person_id\": \"user_charlie_001\", \"text\": \"Charlie asked the robot to greet guests politely and maintain eye contact when saying hello.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:19.572782+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824878_user_alice_001",
+            "name": "Alice also mentioned the robot should smile when waving to seem friendly.",
+            "summary": "Alice also mentioned the robot should smile when waving to seem friendly.",
+            "person_id": "user_alice_001",
+            "payload": "{\"id\": \"log_1769824878_user_alice_001\", \"person_name\": \"Alice\", \"person_id\": \"user_alice_001\", \"text\": \"Alice also mentioned the robot should smile when waving to seem friendly.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:18.515132+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824876_user_alice_001",
+            "name": "Hi robot, I want to teach you how to wave hello. It's a friendly gesture. First raise your right arm to shoulder height, then wave your hand left and right a few times.",
+            "summary": "Hi robot, I want to teach you how to wave hello. It's a friendly gesture. First raise your right arm to shoulder height, then wave your hand left and right a few times.",
+            "person_id": "user_alice_001",
+            "payload": "{\"id\": \"log_1769824876_user_alice_001\", \"person_name\": \"Alice\", \"person_id\": \"user_alice_001\", \"text\": \"Hi robot, I want to teach you how to wave hello. It's a friendly gesture. First raise your right arm to shoulder height, then wave your hand left and right a few times.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:16.210161+00:00",
+            "distance": null
+          }
+        ],
+        "persons": [
+          {
+            "type": "Person",
+            "uuid": "user_charlie_001",
+            "name": "Charlie",
+            "person_id": "user_charlie_001",
+            "profile": null,
+            "face_id": null,
+            "voice_id": null,
+            "gender": null,
+            "updated_at": "2026-01-31T02:01:19.572734+00:00",
+            "distance": null
+          },
+          {
+            "type": "Person",
+            "uuid": "user_alice_001",
+            "name": "Alice",
+            "person_id": "user_alice_001",
+            "profile": null,
+            "face_id": null,
+            "voice_id": null,
+            "gender": null,
+            "updated_at": "2026-01-31T02:01:18.515118+00:00",
+            "distance": null
+          }
+        ],
+        "query": "What personal preferences has Bob shared with the robot?",
+        "person_id": "user_bob_001",
+        "facts": [
+          {
+            "type": "Fact",
+            "uuid": "6e4c7191-c98b-4406-91df-4649f82ba7b8",
+            "content": "Bob reported: Bob told the robot his favorite drink is coffee and he prefers it black.",
+            "score": null
+          },
+          {
+            "type": "Fact",
+            "uuid": "4ffe7fba-0c73-4cf2-a0eb-a9e523754fcd",
+            "content": "Bob reported: Bob said the robot should remind him to drink water in the afternoon because he often forgets.",
+            "score": null
+          },
+          {
+            "type": "Fact",
+            "uuid": "f4d9a2c3-59ca-4042-95f4-df246a7b11bc",
+            "content": "Alice reported: Alice also mentioned the robot should smile when waving to seem friendly.",
+            "score": null
+          }
+        ]
+      },
+      "ok": true,
+      "error": null
+    },
+    {
+      "idx": 3,
+      "query": "Who asked the robot to greet guests politely and maintain eye contact?",
+      "person_id": "user_charlie_001",
+      "expected_answer": {
+        "summary": "Charlie asked the robot to greet guests politely and maintain eye contact.",
+        "details": [
+          "Greet guests politely",
+          "Maintain eye contact when saying hello"
+        ]
+      },
+      "search_result": {
+        "center_person": {
+          "type": "Person",
+          "uuid": "user_charlie_001",
+          "name": "Charlie",
+          "person_id": "user_charlie_001",
+          "profile": null,
+          "face_id": null,
+          "voice_id": null,
+          "gender": null,
+          "updated_at": "2026-01-31T02:01:19.572734+00:00"
+        },
+        "action": null,
+        "events": [
+          {
+            "type": "Event",
+            "uuid": "log_1769824879_user_charlie_001",
+            "name": "Charlie asked the robot to greet guests politely and maintain eye contact when saying hello.",
+            "summary": "Charlie asked the robot to greet guests politely and maintain eye contact when saying hello.",
+            "person_id": "user_charlie_001",
+            "payload": "{\"id\": \"log_1769824879_user_charlie_001\", \"person_name\": \"Charlie\", \"person_id\": \"user_charlie_001\", \"text\": \"Charlie asked the robot to greet guests politely and maintain eye contact when saying hello.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:19.572782+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824878_user_alice_001",
+            "name": "Alice also mentioned the robot should smile when waving to seem friendly.",
+            "summary": "Alice also mentioned the robot should smile when waving to seem friendly.",
+            "person_id": "user_alice_001",
+            "payload": "{\"id\": \"log_1769824878_user_alice_001\", \"person_name\": \"Alice\", \"person_id\": \"user_alice_001\", \"text\": \"Alice also mentioned the robot should smile when waving to seem friendly.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:18.515132+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824877_user_bob_001",
+            "name": "Bob told the robot his favorite drink is coffee and he prefers it black.",
+            "summary": "Bob told the robot his favorite drink is coffee and he prefers it black.",
+            "person_id": "user_bob_001",
+            "payload": "{\"id\": \"log_1769824877_user_bob_001\", \"person_name\": \"Bob\", \"person_id\": \"user_bob_001\", \"text\": \"Bob told the robot his favorite drink is coffee and he prefers it black.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:17.622723+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824876_user_alice_001",
+            "name": "Hi robot, I want to teach you how to wave hello. It's a friendly gesture. First raise your right arm to shoulder height, then wave your hand left and right a few times.",
+            "summary": "Hi robot, I want to teach you how to wave hello. It's a friendly gesture. First raise your right arm to shoulder height, then wave your hand left and right a few times.",
+            "person_id": "user_alice_001",
+            "payload": "{\"id\": \"log_1769824876_user_alice_001\", \"person_name\": \"Alice\", \"person_id\": \"user_alice_001\", \"text\": \"Hi robot, I want to teach you how to wave hello. It's a friendly gesture. First raise your right arm to shoulder height, then wave your hand left and right a few times.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:16.210161+00:00",
+            "distance": null
+          },
+          {
+            "type": "Event",
+            "uuid": "log_1769824880_user_bob_001",
+            "name": "Bob said the robot should remind him to drink water in the afternoon because he often forgets.",
+            "summary": "Bob said the robot should remind him to drink water in the afternoon because he often forgets.",
+            "person_id": "user_bob_001",
+            "payload": "{\"id\": \"log_1769824880_user_bob_001\", \"person_name\": \"Bob\", \"person_id\": \"user_bob_001\", \"text\": \"Bob said the robot should remind him to drink water in the afternoon because he often forgets.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:20.530064+00:00",
+            "distance": null
+          }
+        ],
+        "persons": [
+          {
+            "type": "Person",
+            "uuid": "user_bob_001",
+            "name": "Bob",
+            "person_id": "user_bob_001",
+            "profile": null,
+            "face_id": null,
+            "voice_id": null,
+            "gender": null,
+            "updated_at": "2026-01-31T02:01:20.530015+00:00",
+            "distance": null
+          }
+        ],
+        "query": "Who asked the robot to greet guests politely and maintain eye contact?",
+        "person_id": "user_charlie_001",
+        "facts": [
+          {
+            "type": "Fact",
+            "uuid": "2c072c26-dcdd-47d4-a1cd-c27fd0a83d47",
+            "content": "Charlie reported: Charlie asked the robot to greet guests politely and maintain eye contact when saying hello.",
+            "score": null
+          },
+          {
+            "type": "Fact",
+            "uuid": "6e4c7191-c98b-4406-91df-4649f82ba7b8",
+            "content": "Bob reported: Bob told the robot his favorite drink is coffee and he prefers it black.",
+            "score": null
+          },
+          {
+            "type": "Fact",
+            "uuid": "4ffe7fba-0c73-4cf2-a0eb-a9e523754fcd",
+            "content": "Bob reported: Bob said the robot should remind him to drink water in the afternoon because he often forgets.",
+            "score": null
+          }
+        ]
+      },
+      "ok": true,
+      "error": null
+    },
+    {
+      "idx": 4,
+      "query": "Who prefers coffee black?",
+      "person_id": "user_bob_001",
+      "expected_answer": {
+        "summary": "Bob prefers his coffee black.",
+        "details": [
+          "Favorite drink is coffee",
+          "Prefers coffee without milk or sugar"
+        ]
+      },
+      "search_result": {
+        "center_person": {
+          "type": "Person",
+          "uuid": "user_bob_001",
+          "name": "Bob",
+          "person_id": "user_bob_001",
+          "profile": null,
+          "face_id": null,
+          "voice_id": null,
+          "gender": null,
+          "updated_at": "2026-01-31T02:01:20.530015+00:00"
+        },
+        "action": null,
+        "events": [
+          {
+            "type": "Event",
+            "uuid": "log_1769824877_user_bob_001",
+            "name": "Bob told the robot his favorite drink is coffee and he prefers it black.",
+            "summary": "Bob told the robot his favorite drink is coffee and he prefers it black.",
+            "person_id": "user_bob_001",
+            "payload": "{\"id\": \"log_1769824877_user_bob_001\", \"person_name\": \"Bob\", \"person_id\": \"user_bob_001\", \"text\": \"Bob told the robot his favorite drink is coffee and he prefers it black.\", \"robot_pos_list\": [], \"timestamp\": \"2026-01-31T02:01:16.210015Z\"}",
+            "updated_at": "2026-01-31T02:01:17.622723+00:00",
+            "distance": null
+          }
+        ],
+        "persons": [],
+        "query": "Who prefers coffee black?",
+        "person_id": "user_bob_001",
+        "facts": [
+          {
+            "type": "Fact",
+            "uuid": "6e4c7191-c98b-4406-91df-4649f82ba7b8",
+            "content": "Bob reported: Bob told the robot his favorite drink is coffee and he prefers it black.",
+            "score": null
+          }
+        ]
+      },
+      "ok": true,
+      "error": null
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+[
+    {
+      "person_id": "user_alice_001",
+      "name": "Alice",
+      "clip_summary": "Hi robot, I want to teach you how to wave hello. It's a friendly gesture. First raise your right arm to shoulder height, then wave your hand left and right a few times.",
+      "audio_dialogue": ""
+    },
+    {
+      "person_id": "user_bob_001",
+      "name": "Bob",
+      "clip_summary": "Bob told the robot his favorite drink is coffee and he prefers it black.",
+      "audio_dialogue": ""
+    },
+    {
+      "person_id": "user_alice_001",
+      "name": "Alice",
+      "clip_summary": "Alice also mentioned the robot should smile when waving to seem friendly.",
+      "audio_dialogue": ""
+    },
+    {
+      "person_id": "user_charlie_001",
+      "name": "Charlie",
+      "clip_summary": "Charlie asked the robot to greet guests politely and maintain eye contact when saying hello.",
+      "audio_dialogue": ""
+    },
+    {
+      "person_id": "user_bob_001",
+      "name": "Bob",
+      "clip_summary": "Bob said the robot should remind him to drink water in the afternoon because he often forgets.",
+      "audio_dialogue": ""
+    }
+  ]
