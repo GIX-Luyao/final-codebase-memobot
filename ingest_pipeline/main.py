@@ -16,6 +16,11 @@ import sys
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
+from dotenv import dotenv_values
+
+MEMOBOT_ROOT = Path(__file__).resolve().parent.parent
+DOTENV_PATH = MEMOBOT_ROOT / ".env"
+_ENV = dotenv_values(DOTENV_PATH)
 
 # Ensure ingest_pipeline is on path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
