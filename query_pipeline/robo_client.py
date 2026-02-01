@@ -6,7 +6,10 @@ import asyncio
 import base64
 from dotenv import load_dotenv
 
-from agent import Agent
+try:
+    from .agent import Agent
+except ImportError:
+    from agent import Agent
 
 # Load env from repo root (parent of query_pipeline)
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -15,6 +18,9 @@ load_dotenv(dotenv_path=DOTENV_PATH, override=True)
 
 # Try to import MemobotService
 MemobotService = None
+
+# Keep KG tenant/group configurable (so ingest + query can point to the same shared cloud graph)
+DEFAULT_MEMOBOT_GROUP_ID = os.getenv("MEMOBOT_GROUP_ID", "tenant_001")
 
 # Method 1: Try direct import (if installed as package)
 try:
@@ -80,7 +86,7 @@ class RealtimeAgent:
         if MemobotService is None:
             return
         try:
-            self.memobot_service = MemobotService.from_env(group_id='tenant_001')
+            self.memobot_service = MemobotService.from_env(group_id=DEFAULT_MEMOBOT_GROUP_ID)
             print("[Info] MemobotService initialized for knowledge graph retrieval")
         except Exception as e:
             print(f"[Warning] Failed to initialize MemobotService: {e}")
@@ -142,7 +148,7 @@ class RealtimeAgent:
         
         # 1. Query Vector Database (existing logic)
         try:
-            from query import retrieve_and_rank
+            from query_pipeline.query import retrieve_and_rank
             
             print(f"[DEBUG] Querying vector DB with: {query}")
             
@@ -329,14 +335,18 @@ class RealtimeAgent:
         print("🔑 Getting ephemeral token...")
         token = await self.get_ephemeral_token()
         
-        url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
+        url = "wss://api.openai.com/v1/realtime?model=gpt-realtime-mini"
         headers = {
             "Authorization": f"Bearer {token}",
             "OpenAI-Beta": "realtime=v1",
         }
         
         print("🔌 Connecting to Realtime API...")
-        self.ws = await websockets.connect(url, additional_headers=headers)
+        # websockets 12.x asyncio client uses extra_headers; 16+ uses additional_headers
+        try:
+            self.ws = await websockets.connect(url, additional_headers=headers)
+        except TypeError:
+            self.ws = await websockets.connect(url, extra_headers=headers)
         print("✅ Connected!")
         
         return self.ws
@@ -388,30 +398,36 @@ class RealtimeAgent:
     
     async def receive_messages(self):
         """Receive and process messages from the API."""
-        try:
-            import sounddevice as sd
-            import numpy as np
-            self.sd = sd
-        except ImportError:
-            print("Please install sounddevice and numpy: pip install sounddevice numpy")
-            sys.exit(1)
-        
-        # Create output stream for playback
-        self.output_stream = sd.OutputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype='int16',
-            blocksize=CHUNK_SIZE,
-        )
-        self.output_stream.start()
-        
+        use_callback = self.output_audio_callback is not None
+        if not use_callback:
+            try:
+                import sounddevice as sd
+                import numpy as np
+                self.sd = sd
+            except ImportError:
+                print("Please install sounddevice and numpy: pip install sounddevice numpy")
+                sys.exit(1)
+            # Create output stream for playback
+            self.output_stream = sd.OutputStream(
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype='int16',
+                blocksize=CHUNK_SIZE,
+            )
+            self.output_stream.start()
+        else:
+            import numpy as np  # for type only; callback receives raw bytes
+
         try:
             async for message in self.ws:
                 event = json.loads(message)
                 event_type = event.get("type", "")
                 
                 if event_type == "session.created":
-                    print("🎙️  Session started. Speak into your microphone...")
+                    if use_callback:
+                        print("🎙️  Session started. Audio via robot bridge.")
+                    else:
+                        print("🎙️  Session started. Speak into your microphone...")
                     print("    Press Ctrl+C to stop.\n")
                 
                 elif event_type == "input_audio_buffer.speech_started":
@@ -429,9 +445,13 @@ class RealtimeAgent:
                     audio_b64 = event.get("delta", "")
                     if audio_b64:
                         audio_data = base64.b64decode(audio_b64)
-                        # Convert bytes to numpy array for sounddevice
-                        audio_array = np.frombuffer(audio_data, dtype=np.int16)
-                        self.output_stream.write(audio_array)
+                        if use_callback:
+                            result = self.output_audio_callback(audio_data)
+                            if asyncio.iscoroutine(result):
+                                await result
+                        else:
+                            audio_array = np.frombuffer(audio_data, dtype=np.int16)
+                            self.output_stream.write(audio_array)
                 
                 elif event_type == "response.audio_transcript.delta":
                     transcript = event.get("delta", "")
@@ -505,6 +525,22 @@ class RealtimeAgent:
                 self.input_stream.stop()
                 self.input_stream.close()
     
+    async def _robot_input_loop(self, robot_audio_reader, commit_interval_sec=2.0):
+        """Read 24kHz PCM from an async iterator (e.g. robot socket), send to API, commit periodically."""
+        import time
+        last_commit = time.monotonic()
+        try:
+            async for chunk in robot_audio_reader:
+                if chunk:
+                    await self.send_audio(chunk)
+                if time.monotonic() - last_commit >= commit_interval_sec:
+                    await self.commit_audio()
+                    last_commit = time.monotonic()
+        except (ConnectionError, asyncio.CancelledError, GeneratorExit):
+            pass
+        except Exception as e:
+            print(f"[Robot input] Error: {e}")
+
     async def run(self):
         """Main run loop for the realtime agent."""
         try:
@@ -516,6 +552,21 @@ class RealtimeAgent:
                 self.receive_messages(),
             )
             
+        except KeyboardInterrupt:
+            print("\n\n👋 Goodbye!")
+        except Exception as e:
+            print(f"Error: {e}")
+        finally:
+            self.cleanup()
+
+    async def run_with_robot_bridge(self, robot_audio_reader):
+        """Run realtime API with audio I/O via robot (no mic). robot_audio_reader yields 24kHz PCM bytes."""
+        try:
+            await self.connect()
+            await asyncio.gather(
+                self._robot_input_loop(robot_audio_reader),
+                self.receive_messages(),
+            )
         except KeyboardInterrupt:
             print("\n\n👋 Goodbye!")
         except Exception as e:
@@ -584,6 +635,59 @@ def run_realtime_mode(user_name=None, person_id=None):
     
     agent = RealtimeAgent(api_key, user_name=user_name, person_id=person_id)
     asyncio.run(agent.run())
+
+
+def run_realtime_mode_with_robot(user_name=None, robot_audio_reader=None, output_audio_callback=None):
+    """Run realtime API with audio I/O bridged to a robot (e.g. NAO over TCP).
+
+    Args:
+        user_name: Optional name of the recognized user; injected into the system prompt.
+        robot_audio_reader: Async iterator yielding 24 kHz PCM bytes (robot mic → API input).
+        output_audio_callback: Callable(audio_data: bytes) for API response audio (API output → robot speaker).
+            May be sync or async; if it returns a coroutine it will be awaited.
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("\nERROR: OPENAI_API_KEY is not set.")
+        print(f"Looked for .env at: {DOTENV_PATH}")
+        sys.exit(1)
+    if not api_key.startswith("sk-"):
+        print("\nERROR: OPENAI_API_KEY does not look like an OpenAI key.")
+        sys.exit(1)
+    if not robot_audio_reader or not output_audio_callback:
+        print("\nERROR: run_realtime_mode_with_robot requires robot_audio_reader and output_audio_callback.")
+        sys.exit(1)
+
+    print("\n🎙️  Memobot Realtime Audio Mode (Robot Bridge)")
+    print("=" * 40)
+    if user_name:
+        print(f"Recognized user: {user_name}")
+    print("Audio I/O is via robot (NAO); Realtime API for voice + memory.")
+    print("=" * 40)
+
+    agent = RealtimeAgent(
+        api_key,
+        user_name=user_name,
+        output_audio_callback=output_audio_callback,
+    )
+    asyncio.run(agent.run_with_robot_bridge(robot_audio_reader))
+
+
+async def run_realtime_with_robot_async(user_name=None, robot_audio_reader=None, output_audio_callback=None):
+    """Async entry point for running realtime API with robot bridge (e.g. from mac_master).
+    Caller must provide OPENAI_API_KEY in env. Use this when you already have an event loop.
+    """
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key or not api_key.startswith("sk-"):
+        raise RuntimeError("OPENAI_API_KEY is not set or invalid.")
+    if not robot_audio_reader or not output_audio_callback:
+        raise RuntimeError("robot_audio_reader and output_audio_callback are required.")
+    agent = RealtimeAgent(
+        api_key,
+        user_name=user_name,
+        output_audio_callback=output_audio_callback,
+    )
+    await agent.run_with_robot_bridge(robot_audio_reader)
 
 
 def run_text_mode():
@@ -680,7 +784,7 @@ async def test_knowledge_graph():
     # Initialize the service
     try:
         print("\n📡 Initializing MemobotService...")
-        service = MemobotService.from_env(group_id='tenant_001')
+        service = MemobotService.from_env(group_id=DEFAULT_MEMOBOT_GROUP_ID)
         print("✅ MemobotService initialized successfully")
     except Exception as e:
         print(f"\n❌ FAILED to initialize MemobotService: {e}")
@@ -764,7 +868,7 @@ async def add_test_memory():
     
     try:
         print("\n📡 Initializing MemobotService...")
-        service = MemobotService.from_env(group_id='tenant_001')
+        service = MemobotService.from_env(group_id=DEFAULT_MEMOBOT_GROUP_ID)
         print("✅ MemobotService initialized successfully")
     except Exception as e:
         print(f"\n❌ FAILED to initialize MemobotService: {e}")

@@ -1,0 +1,12 @@
+README.md
+setup.py
+memobot_sdk.egg-info/PKG-INFO
+memobot_sdk.egg-info/SOURCES.txt
+memobot_sdk.egg-info/dependency_links.txt
+memobot_sdk.egg-info/requires.txt
+memobot_sdk.egg-info/top_level.txt
+sdk/__init__.py
+sdk/client.py
+tests/__init__.py
+tests/test_api.py
+tests/test_sdk.py

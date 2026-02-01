@@ -17,9 +17,11 @@ __pycache__/
 *.so
 .Python
 venv/
-env/
+.venv/
+.env/
 ENV/
 .venv
+
 
 # IDE
 .vscode/
@@ -30,11 +32,12 @@ ENV/
 
 # Generated pipeline artifacts
 **/intermediate_outputs/
+ingest_pipeline/talknet/
 
+.venv/
 
 # Explicitly track these directories (do not ignore)
-!ingest_pipeline/talknet/demo/
 !**/pyframes/
 
-.DS_Store
-**/.DS_Store
+# Ignore TalkNet demo artifacts
+ingest_pipeline/talknet/demo/
