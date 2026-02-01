@@ -16,6 +16,11 @@ import sys
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
+from dotenv import dotenv_values
+
+MEMOBOT_ROOT = Path(__file__).resolve().parent.parent
+DOTENV_PATH = MEMOBOT_ROOT / ".env"
+_ENV = dotenv_values(DOTENV_PATH)
 
 # Ensure ingest_pipeline is on path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -30,10 +35,17 @@ try:
 except ImportError:
     print("[Warning] Memobot package not found. Knowledge Graph ingestion will be skipped.")
     MemobotService = None
+    exit(1)
+except Exception as e:
+    print(f"[Error] Failed to import MemobotService: {e}")
+    exit(1)
 
 # Default Pinecone index and clip length (one embedding per 30s clip)
 DEFAULT_INDEX_NAME = "twelve-labs"
 DEFAULT_CLIP_LENGTH = 30
+
+# Knowledge Graph tenant/group id (keep configurable so ingest + query share the same graph)
+DEFAULT_MEMOBOT_GROUP_ID = os.getenv("MEMOBOT_GROUP_ID", "tenant_003")
 
 # Video extensions to discover in data/
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
@@ -83,6 +95,7 @@ async def ingest_to_graph(final_outputs: list[dict], memobot_service: MemobotSer
     Reformat final_outputs and build the knowledge graph.
     """
     if not memobot_service or not final_outputs:
+        print("[Warning] MemobotService not available or no final outputs to ingest.")
         return
 
     print("\n" + "=" * 60)
@@ -94,7 +107,7 @@ async def ingest_to_graph(final_outputs: list[dict], memobot_service: MemobotSer
     for item in final_outputs:
         pid = item.get("person_id")
         name = item.get("name")
-        text_content = item.get("audio_dialogue") or item.get("clip_summary")
+        text_content = item.get("clip_summary")
 
         input_data = {
             "id": f"log_{int(datetime.now().timestamp())}_{pid}",
@@ -122,11 +135,10 @@ async def main_async():
     memobot_service = None
     if MemobotService:
         try:
-            memobot_service = MemobotService.from_env(group_id='tenant_001')
-            print("[Info] MemobotService initialized")
+            memobot_service = MemobotService.from_env(group_id=DEFAULT_MEMOBOT_GROUP_ID)
+            print(f"[Info] MemobotService initialized (group_id={DEFAULT_MEMOBOT_GROUP_ID})")
         except Exception as e:
             print(f"[Warning] Failed to initialize MemobotService: {e}")
-
     if len(sys.argv) >= 2:
         # Explicit video: path or filename under data/
         video_arg = sys.argv[1]
@@ -192,14 +204,17 @@ async def main_async():
                         "audio_dialogue": audio_dialogue,
                     }
                 )
-
-    # Step 3: Build Knowledge Graph using final_outputs
-    await ingest_to_graph(final_outputs, memobot_service)
-
     print("\n" + "=" * 60)
     print("FINAL JSON OUTPUT")
     print("=" * 60)
     print(json.dumps(final_outputs, indent=2))
+
+    print("================================================")
+
+    # Step 3: Build Knowledge Graph using final_outputs
+    await ingest_to_graph(final_outputs, memobot_service)
+
+    
     
     # Note: memobot_service.close() is NOT called here anymore.
     # It should be managed by the caller of main_async if needed, 

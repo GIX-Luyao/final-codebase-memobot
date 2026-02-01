@@ -92,6 +92,7 @@ asyncio.run(stream_video_segments())
 # .env
 DATABASE_URL=postgresql://user:pass@localhost:5432/memobot
 REDIS_URL=redis://localhost:6379/0
+Knowledge_Graph=bolt://localhost:7687
 OPENAI_API_KEY=sk-...           # For text embeddings + LLM
 TWELVE_LABS_API_KEY=tlk_...     # For video embeddings
 ```

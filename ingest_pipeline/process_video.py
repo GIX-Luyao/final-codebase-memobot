@@ -23,14 +23,53 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import json
 
-import cv2
-import numpy as np
-from dotenv import load_dotenv
-import requests
-import asyncio
-import sys
-from pathlib import Path
+# #region agent log
+print("DEBUG_LOG: process_video.py - Top of file")
+# #endregion
 
+# #region agent log
+print("DEBUG_LOG: Before importing cv2")
+# #endregion
+import cv2
+# #region agent log
+print("DEBUG_LOG: After importing cv2")
+# #endregion
+
+# #region agent log
+print("DEBUG_LOG: Before importing numpy")
+# #endregion
+import numpy as np
+# #region agent log
+print("DEBUG_LOG: After importing numpy")
+# #endregion
+
+# #region agent log
+print("DEBUG_LOG: Before importing dotenv")
+# #endregion
+from dotenv import load_dotenv
+# #region agent log
+print("DEBUG_LOG: After importing dotenv")
+# #endregion
+
+# #region agent log
+print("DEBUG_LOG: Before importing requests")
+# #endregion
+import requests
+# #region agent log
+print("DEBUG_LOG: After importing requests")
+# #endregion
+
+# #region agent log
+print("DEBUG_LOG: Before importing asyncio")
+# #endregion
+import asyncio
+# #region agent log
+print("DEBUG_LOG: After importing asyncio")
+# #endregion
+
+# #region agent log
+print("DEBUG_LOG: Before importing speaker_diarization")
+# #endregion
 # Import speaker diarization functions
 sys.path.insert(0, str(Path(__file__).parent / "speaker_diarization"))
 from enroll_from_local_wav import (
@@ -47,7 +86,13 @@ from enroll_from_local_wav import (
     media_put_url,
     upload_bytes,
 )
+# #region agent log
+print("DEBUG_LOG: After importing speaker_diarization")
+# #endregion
 
+# #region agent log
+print("DEBUG_LOG: Before importing talknet")
+# #endregion
 # Import TalkNet functions
 sys.path.insert(0, str(Path(__file__).parent / "talknet"))
 try:
@@ -61,7 +106,13 @@ try:
 except ImportError as e:
     print(f"[Error] Failed to import TalkNet functions: {e}")
     raise
+# #region agent log
+print("DEBUG_LOG: After importing talknet")
+# #endregion
 
+# #region agent log
+print("DEBUG_LOG: Before importing deepface matching")
+# #endregion
 # Import face matching functions
 sys.path.insert(0, str(Path(__file__).parent.parent / "deepface"))
 from match_face import (
@@ -71,7 +122,13 @@ from match_face import (
     match_query_to_db,
     person_id_from_path,
 )
+# #region agent log
+print("DEBUG_LOG: After importing deepface matching")
+# #endregion
 
+# #region agent log
+print("DEBUG_LOG: Before importing database")
+# #endregion
 # Import database functions
 MEMOBOT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(MEMOBOT_ROOT))
@@ -80,6 +137,9 @@ from utils.database import (
     update_speaker_id,
     get_person_by_speaker_id,
 )
+# #region agent log
+print("DEBUG_LOG: After importing database")
+# #endregion
 
 # Load .env from memobot root
 load_dotenv(dotenv_path=MEMOBOT_ROOT / ".env")

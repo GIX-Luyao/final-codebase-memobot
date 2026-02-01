@@ -47,7 +47,6 @@ prometheus-client==0.19.0
 pyannote.audio
 
 opencv-python 
-numpy
 
 python_speech_features
 scenedetect
@@ -65,10 +64,9 @@ tf-keras
 
 pyaudio
 
-# Note: Python 3.12.11 is required
+# Note: Python 3.9.6 is required
 # Graph Database (optional, for future entity/relation storage)
-# neo4j==5.14.0
+neo4j==5.14.0
 
 twelvelabs>=1.2.0b0
 pinecone
-av
