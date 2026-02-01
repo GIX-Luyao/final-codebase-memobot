@@ -36,3 +36,5 @@ ENV/
 !ingest_pipeline/talknet/demo/
 !**/pyframes/
 
+.DS_Store
+**/.DS_Store
