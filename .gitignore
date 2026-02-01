@@ -41,3 +41,7 @@ ingest_pipeline/talknet/
 
 # Ignore TalkNet demo artifacts
 ingest_pipeline/talknet/demo/
+
+# macOS
+.DS_Store
+**/.DS_Store
