@@ -65,6 +65,15 @@ CHUNK_DURATION_MS = 100
 CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
 
 
+# Base system instructions for Realtime API; user identity is appended via session.update when recognized.
+BASE_INSTRUCTIONS = (
+    "You are a helpful assistant with access to a memory system. You must speak english. "
+    "When users ask about past events, use the retrieveMemory function to find relevant information. "
+    "When you are unsure, do not make up information. Keep responses concise for voice interaction. "
+    "Always address the user by name if you know it."
+)
+
+
 class RealtimeAgent:
     """Agent using OpenAI's Realtime API for audio-to-audio interaction."""
     
@@ -94,11 +103,10 @@ class RealtimeAgent:
         
     async def get_ephemeral_token(self):
         """Get an ephemeral client secret for WebSocket connection."""
-        base_instructions = "You are a helpful assistant with access to a memory system. You must speak english. When users ask about past events, use the retrieveMemory function to find relevant information. When you are unsure, do not make up information. Keep responses concise for voice interaction."
         if self.user_name:
-            instructions = f"You are speaking with {self.user_name}. " + base_instructions
+            instructions = f"{BASE_INSTRUCTIONS} The user you are speaking with is {self.user_name}."
         else:
-            instructions = base_instructions
+            instructions = BASE_INSTRUCTIONS
         session_config = {
             "model": "gpt-4o-realtime-preview-2024-12-17",
             "voice": "verse",
@@ -140,6 +148,36 @@ class RealtimeAgent:
         
         data = response.json()
         return data["client_secret"]["value"]
+
+    async def update_speaker_identity(self, user_name, person_id=None):
+        """
+        Send a session.update event to inform the Realtime API of the current speaker.
+        Call this as soon as facial recognition identifies a user (or when the user changes).
+        When person_id is provided (e.g. from face recognition DB), use it for memory queries;
+        otherwise fall back to user_{name}_001 for backward compatibility.
+        """
+        if not self.ws:
+            return
+        if user_name:
+            dynamic_instructions = f"{BASE_INSTRUCTIONS} The user you are speaking with is {user_name}."
+        else:
+            dynamic_instructions = BASE_INSTRUCTIONS
+        event = {
+            "type": "session.update",
+            "session": {
+                "instructions": dynamic_instructions
+            }
+        }
+        print(f"[Realtime] Updating speaker to: {user_name or 'Unknown'}" + (f" (person_id={person_id})" if person_id else ""))
+        await self.ws.send(json.dumps(event))
+        # Keep agent state in sync for retrieve_memory / person_id
+        self.user_name = user_name
+        if person_id is not None:
+            self.person_id = person_id  # Use real DB person_id from face recognition
+        elif user_name:
+            self.person_id = f"user_{user_name.lower().replace(' ', '_')}_001"  # Fallback when only name is known
+        else:
+            self.person_id = None
     
     async def retrieve_memory(self, query):
         """Retrieve memories using both vector DB and knowledge graph."""
@@ -558,7 +596,7 @@ class RealtimeAgent:
         except Exception as e:
             print(f"Error: {e}")
         finally:
-            self.cleanup()
+            await self.cleanup()
 
     async def run_with_robot_bridge(self, robot_audio_reader):
         """Run realtime API with audio I/O via robot (no mic). robot_audio_reader yields 24kHz PCM bytes."""
@@ -573,9 +611,9 @@ class RealtimeAgent:
         except Exception as e:
             print(f"Error: {e}")
         finally:
-            self.cleanup()
+            await self.cleanup()
     
-    def cleanup(self):
+    async def cleanup(self):
         """Clean up resources."""
         self.is_recording = False
         
@@ -583,21 +621,21 @@ class RealtimeAgent:
             try:
                 self.input_stream.stop()
                 self.input_stream.close()
-            except:
+            except Exception:
                 pass
         
         if self.output_stream:
             try:
                 self.output_stream.stop()
                 self.output_stream.close()
-            except:
+            except Exception:
                 pass
         
         # Close MemobotService connection
         if self.memobot_service:
             try:
-                asyncio.run(self.memobot_service.close())
-            except:
+                await self.memobot_service.close()
+            except Exception:
                 pass
 
 

@@ -64,6 +64,10 @@ tf-keras
 
 pyaudio
 
+# Voice activity detection (Silero VAD)
+silero-vad
+torch>=1.12.0
+
 # Note: Python 3.9.6 is required
 # Graph Database (optional, for future entity/relation storage)
 neo4j==5.14.0

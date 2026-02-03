@@ -94,3 +94,6 @@ pytest-asyncio==0.21.1
 # ---------- Retry ----------
 backoff==2.2.1
 tenacity==9.1.2
+
+silero-vad 
+torch
