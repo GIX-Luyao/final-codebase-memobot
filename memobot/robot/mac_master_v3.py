@@ -145,8 +145,8 @@ class ServerRealtimeAgent(RealtimeAgent):
     """
     Subclass of RealtimeAgent that overrides hardware I/O.
     """
-    def __init__(self, api_key, user_name=None):
-        super().__init__(api_key, user_name)
+    def __init__(self, api_key, user_name=None, person_id=None):
+        super().__init__(api_key, user_name=user_name, person_id=person_id)
         self.output_stream = None
         self.input_stream = None
         self.playback_end_time = 0.0

@@ -374,7 +374,7 @@ def generate_embedding(video_source, clip_length=30):
             start_sec=0.0,
             end_sec=float(clip_length),
             embedding_scope=["asset"],
-            embedding_option=["visual", "audio", "transcription"],
+            embedding_option=["audio"],
         )
     else:
         video_req = {
@@ -382,7 +382,7 @@ def generate_embedding(video_source, clip_length=30):
             "start_sec": 0.0,
             "end_sec": float(clip_length),
             "embedding_scope": ["asset"],
-            "embedding_option": ["visual", "audio", "transcription"],
+            "embedding_option": ["audio"],
         }
 
     response = twelvelabs_client.embed.v_2.create(
@@ -469,178 +469,173 @@ def _persons_in_turns(process_video_turns):
 
 def _dialogue_transcript(process_video_turns) -> str:
     """
-    Build a spoken transcript for the clip with proper person_id-to-voice matching.
+    Build a spoken transcript for the clip using person_id only (no names).
 
     Input turns come from process_video: [{person_id, name, face_id, text, start, end}, ...]
-    Output is a human-readable transcript like:
-        Alice: "..."
-        Bob: "..."
+    Output format: person_id: "..." or Unknown: "..."
     """
     if not process_video_turns:
         return ""
 
-    # Ensure chronological order
     turns_sorted = sorted(process_video_turns, key=lambda t: float(t.get("start", 0.0)))
-
     lines: list[str] = []
     for t in turns_sorted:
         text = (t.get("text") or "").strip()
         if not text:
             continue
-
-        label = t.get("name") or t.get("person_id") or t.get("face_id") or "Unknown"
+        label = t.get("person_id") or t.get("face_id") or "Unknown"
         lines.append(f'{label}: "{text}"')
-
     return "\n".join(lines)
 
 
-def ingest_data(video_source, index_name="twelve-labs", clip_length=30, process_video_results=None, memobot_group_id=None):
+def _video_name_from_source(video_source: str) -> str:
+    """Extract video name from URL or path."""
+    if video_source.startswith(("http://", "https://")):
+        return os.path.splitext(os.path.basename(video_source.split("?")[0]))[0]
+    return os.path.splitext(os.path.basename(video_source))[0]
+
+
+def run_embeddings_only(video_source: str, index_name: str, clip_length: float):
     """
-    Generate one embedding and one Pegasus summary per video, then upsert to Pinecone.
+    Memory builder — embeddings side only.
+    Upload video, generate Marengo embeddings. Safe to run in parallel with
+    process_video and run_pegasus_caption_only.
     """
-    
-    # --- Timing Setup ---
-    overall_start = time.perf_counter()
-    timings = {} # To store durations for the final report
-
-    process_video_results = process_video_results or []
-    if memobot_group_id is None:
-        memobot_group_id = os.getenv("MEMOBOT_GROUP_ID", "tenant_003")
-
-    pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-
-    # Extract video name
-    if video_source.startswith(('http://', 'https://')):
-        video_name = os.path.splitext(os.path.basename(video_source.split('?')[0]))[0]
-    else:
-        video_name = os.path.splitext(os.path.basename(video_source))[0]
-    print(f"Processing video: {video_name}")
-
-    # --- Step 1: Pinecone Init ---
     t_start = time.perf_counter()
-    if index_name not in pc.list_indexes().names():
-        print(f"Creating Pinecone index: {index_name}")
-        pc.create_index(
-            name=index_name,
-            dimension=512,
-            metric="cosine",
-            spec=ServerlessSpec(
-                cloud="aws",
-                region="us-east-1"
-            )
-        )
-    index = pc.Index(index_name)
+    video_name = _video_name_from_source(video_source)
+    print(f"[Embeddings] Processing video: {video_name}")
+    embeddings, _ = generate_embedding(video_source, clip_length)
     t_end = time.perf_counter()
-    timings["pinecone_init"] = t_end - t_start
-    print(f"[Timing] Pinecone Init/Check took: {timings['pinecone_init']:.2f}s")
+    print(f"[Timing] Embeddings (Marengo) took: {t_end - t_start:.2f}s")
+    return {
+        "video_source": video_source,
+        "video_name": video_name,
+        "clip_length": float(clip_length),
+        "clip_start_sec": 0.0,
+        "clip_end_sec": float(clip_length),
+        "embeddings": embeddings,
+    }
 
-    # --- Step 2: Marengo Embeddings ---
-    print("Generating embeddings (Marengo)...")
-    t_start = time.perf_counter()
-    embeddings, task_result = generate_embedding(video_source, clip_length)
-    t_end = time.perf_counter()
-    timings["marengo_embeddings"] = t_end - t_start
-    print(f"[Timing] Marengo Embeddings took: {timings['marengo_embeddings']:.2f}s")
 
-    # --- Step 3: Pegasus Upload ---
-    print("Uploading to Pegasus...")
+def run_pegasus_caption_only(video_source: str, clip_length: float):
+    """
+    Memory builder — video understanding caption only (Pegasus).
+    Upload to Pegasus, analyze segment for summary/importance. Safe to run in
+    parallel with process_video and run_embeddings_only. Caption is produced
+    without dialogue (segment_dialogue=None) so it can run before process_video.
+    """
     t_start = time.perf_counter()
+    video_name = _video_name_from_source(video_source)
+    print(f"[Pegasus] Processing video: {video_name}")
     pegasus_index = ensure_pegasus_index(twelvelabs_client, PEGASUS_INDEX_NAME)
     pegasus_video_id = upload_video_to_pegasus(
         twelvelabs_client,
         pegasus_index.id,
-        video_source
+        video_source,
     )
-    t_end = time.perf_counter()
-    timings["pegasus_upload"] = t_end - t_start
-    print(f"[Timing] Pegasus Upload took: {timings['pegasus_upload']:.2f}s")
-
-    # --- Step 4: Pegasus Analysis ---
-    print("Running Pegasus Analysis...")
-    t_start = time.perf_counter()
-    now_utc = datetime.now(timezone.utc).isoformat()
-
     clip_start_sec = 0.0
     clip_end_sec = float(clip_length)
-    clip_dialogue = _turns_in_segment(process_video_results, clip_start_sec, clip_end_sec)
-    person_ids, persons = _persons_in_turns(clip_dialogue)
-    audio_dialogue = _dialogue_transcript(clip_dialogue)
-    
     summary, importance, talking_to_camera = analyze_segment_with_pegasus(
         twelvelabs_client,
         pegasus_video_id,
         clip_start_sec,
         clip_end_sec,
         embedding_option="visual",
-        segment_dialogue=clip_dialogue,
+        segment_dialogue=None,
     )
     t_end = time.perf_counter()
-    timings["pegasus_analysis"] = t_end - t_start
-    print(f"[Timing] Pegasus Analysis took: {timings['pegasus_analysis']:.2f}s")
+    print(f"[Timing] Pegasus (upload + caption) took: {t_end - t_start:.2f}s")
+    return {
+        "video_source": video_source,
+        "video_name": video_name,
+        "pegasus_video_id": pegasus_video_id,
+        "summary": summary,
+        "importance_score": importance,
+        "talking_to_camera": talking_to_camera,
+        "clip_start_sec": clip_start_sec,
+        "clip_end_sec": clip_end_sec,
+    }
 
-    # --- Step 5: Upsert to Pinecone ---
-    print("Upserting to Pinecone...")
+
+def merge_and_upsert(
+    video_source: str,
+    index_name: str,
+    clip_length: float,
+    embeddings_result: dict,
+    pegasus_result: dict,
+    process_video_results: list,
+    memobot_group_id: str = None,
+    full_audio_dialogue: str = None,
+):
+    """
+    Merge results from process_video, embeddings, and Pegasus; upsert to Pinecone.
+    Call after running process_video, run_embeddings_only, and run_pegasus_caption_only
+    in parallel. If full_audio_dialogue is provided (robot + person_id lines), it is
+    used as audio_dialogue; otherwise built from process_video_results.
+    """
+    if memobot_group_id is None:
+        memobot_group_id = os.getenv("MEMOBOT_GROUP_ID", "tenant_003")
+
+    process_video_results = process_video_results or []
+    video_name = embeddings_result["video_name"]
+    embeddings = embeddings_result["embeddings"]
+    clip_start_sec = embeddings_result["clip_start_sec"]
+    clip_end_sec = embeddings_result["clip_end_sec"]
+
+    summary = pegasus_result.get("summary")
+    importance = pegasus_result.get("importance_score")
+    talking_to_camera = pegasus_result.get("talking_to_camera")
+    pegasus_video_id = pegasus_result.get("pegasus_video_id")
+
+    clip_dialogue = _turns_in_segment(process_video_results, clip_start_sec, clip_end_sec)
+    person_ids, persons = _persons_in_turns(clip_dialogue)
+    audio_dialogue = (full_audio_dialogue if full_audio_dialogue is not None else _dialogue_transcript(clip_dialogue))
+
     t_start = time.perf_counter()
+    pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+    if index_name not in pc.list_indexes().names():
+        print(f"Creating Pinecone index: {index_name}")
+        pc.create_index(
+            name=index_name,
+            dimension=512,
+            metric="cosine",
+            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        )
+    index = pc.Index(index_name)
+    now_utc = datetime.now(timezone.utc).isoformat()
+
     vectors_to_upsert = []
     for i, emb in enumerate(embeddings):
         start_sec = emb["start_offset_sec"]
         end_sec = emb["end_offset_sec"]
-
-        emb_option = emb['embedding_option']
-        if isinstance(emb_option, list):
-            emb_option_str = emb_option[0] if emb_option else "visual"
-        else:
-            emb_option_str = emb_option or "visual"
-
-        option_map = {
-            "transcription": "text",
-            "visual": "visual",
-            "audio": "audio"
-        }
+        emb_option = emb["embedding_option"]
+        emb_option_str = emb_option[0] if isinstance(emb_option, list) and emb_option else (emb_option or "visual")
+        if not isinstance(emb_option_str, str):
+            emb_option_str = "visual"
+        option_map = {"transcription": "text", "visual": "visual", "audio": "audio"}
         option_suffix = option_map.get(emb_option_str.lower(), emb_option_str.lower())
-
         vector_id = f"{video_name}_{i}_{option_suffix}"
         metadata = {
-            'video_file': video_name,
-            'start_time_sec': start_sec,
-            'end_time_sec': end_sec,
-            'scope': emb['embedding_scope'],
-            'embedding_option': emb['embedding_option'],
-            'timestamp_utc': now_utc,
-            'summary': summary,
-            'importance_score': importance,
-            'talking_to_camera': talking_to_camera,
-            'pegasus_video_id': pegasus_video_id,
-            'person_ids': person_ids,
-            'audio_dialogue': audio_dialogue,
-            'memobot_group_id': memobot_group_id,
+            "video_file": video_name,
+            "start_time_sec": start_sec,
+            "end_time_sec": end_sec,
+            "scope": emb["embedding_scope"],
+            "embedding_option": emb["embedding_option"],
+            "timestamp_utc": now_utc,
+            "summary": summary,
+            "importance_score": importance,
+            "talking_to_camera": talking_to_camera,
+            "pegasus_video_id": pegasus_video_id,
+            "person_ids": person_ids,
+            "audio_dialogue": audio_dialogue,
+            "memobot_group_id": memobot_group_id,
         }
-
-        vectors_to_upsert.append(
-            (vector_id, emb['embedding'], metadata)
-        )
+        vectors_to_upsert.append((vector_id, emb["embedding"], metadata))
 
     index.upsert(vectors=vectors_to_upsert)
     t_end = time.perf_counter()
-    timings["pinecone_upsert"] = t_end - t_start
-    print(f"[Timing] Pinecone Upsert took: {timings['pinecone_upsert']:.2f}s")
-    
+    print(f"[Timing] Merge + Pinecone upsert took: {t_end - t_start:.2f}s")
     print(f"Ingested {len(embeddings)} embeddings for {video_source}")
-    
-    overall_end = time.perf_counter()
-    total_duration = overall_end - overall_start
-
-    # --- Final Report ---
-    print("\n" + "="*40)
-    print(f"VECTOR DB TIMING REPORT ({video_name})")
-    print("="*40)
-    print(f"{'Step':<25} | {'Duration':<10}")
-    print("-" * 40)
-    for step, duration in timings.items():
-        print(f"{step:<25} | {duration:.2f}s")
-    print("-" * 40)
-    print(f"{'TOTAL':<25} | {total_duration:.2f}s")
-    print("="*40 + "\n")
 
     return {
         "video_source": video_source,
@@ -653,6 +648,29 @@ def ingest_data(video_source, index_name="twelve-labs", clip_length=30, process_
         "person_ids": person_ids,
         "persons": persons,
     }
+
+
+def ingest_data(video_source, index_name="twelve-labs", clip_length=30, process_video_results=None, memobot_group_id=None):
+    """
+    Generate one embedding and one Pegasus summary per video, then upsert to Pinecone.
+    Sequential fallback: runs embeddings and Pegasus in sequence, then merge.
+    For parallel execution use run_embeddings_only, run_pegasus_caption_only, and merge_and_upsert from main.
+    """
+    process_video_results = process_video_results or []
+    if memobot_group_id is None:
+        memobot_group_id = os.getenv("MEMOBOT_GROUP_ID", "tenant_003")
+
+    embeddings_result = run_embeddings_only(video_source, index_name, clip_length)
+    pegasus_result = run_pegasus_caption_only(video_source, clip_length)
+    return merge_and_upsert(
+        video_source,
+        index_name,
+        clip_length,
+        embeddings_result,
+        pegasus_result,
+        process_video_results,
+        memobot_group_id,
+    )
 
 
 if __name__ == "__main__":

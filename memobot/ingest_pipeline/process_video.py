@@ -234,10 +234,34 @@ def process_video(video_filename: str) -> Tuple[List[Dict[str, Any]], Path]:
     t_end = time.perf_counter()
     print(f"[Timing] Step 2b (Robot filter) took: {t_end - t_start:.2f}s")
     print(f"[Info] {len(human_turns)} non-robot turns to process (TalkNet + DeepFace).")
-    
+
+    def _build_full_audio_dialogue(all_turns, is_robot_map, result_list):
+        """Build transcript with robot: \"...\" and person_id: \"...\" (no names)."""
+        sorted_turns = sorted(all_turns, key=lambda t: float(t.get("start", 0)))
+        result_by_start = {(float(r.get("start", 0))): r for r in result_list}
+        lines = []
+        for t in sorted_turns:
+            text = (t.get("text") or "").strip()
+            if not text:
+                continue
+            if is_robot_map.get(t.get("speaker"), False):
+                lines.append(f'robot: "{text}"')
+            else:
+                start = float(t.get("start", 0))
+                r = result_by_start.get(start)
+                if r is None:
+                    for rs, res in result_by_start.items():
+                        if abs(rs - start) < 0.5:
+                            r = res
+                            break
+                label = (r.get("person_id") or r.get("face_id") if r else None) or "Unknown"
+                lines.append(f'{label}: "{text}"')
+        return "\n".join(lines)
+
     if not human_turns:
         print("[Warning] No human turns after robot filter.")
-        return [], intermediate_dir
+        full_audio_dialogue = _build_full_audio_dialogue(turns, speaker_is_robot, [])
+        return [], intermediate_dir, full_audio_dialogue
     
     # --- Step 3: Targeted TalkNet + Face Matching (parallel per segment) ---
     print("\n=== Step 3: Active Speaker Detection + Face Match (parallel) ===")
@@ -338,7 +362,8 @@ def process_video(video_filename: str) -> Tuple[List[Dict[str, Any]], Path]:
 
     if not all_face_crops:
         print("[Warning] No faces found in any active segments.")
-        return [], intermediate_dir
+        full_audio_dialogue = _build_full_audio_dialogue(turns, speaker_is_robot, [])
+        return [], intermediate_dir, full_audio_dialogue
 
     # --- Step 4: Face Matching ---
     print(f"\n=== Step 4: Matching {len(all_face_crops)} faces against database ===")
@@ -412,11 +437,13 @@ def process_video(video_filename: str) -> Tuple[List[Dict[str, Any]], Path]:
     final_output = intermediate_dir / "final_results.json"
     with open(final_output, "w") as f:
         json.dump(results, f, indent=2)
-        
+
+    full_audio_dialogue = _build_full_audio_dialogue(turns, speaker_is_robot, results)
+
     pipeline_end_time = time.perf_counter()
     print(f"\n[Timing] TOTAL process_video execution time: {pipeline_end_time - pipeline_start_time:.2f}s")
-    
-    return results, intermediate_dir
+
+    return results, intermediate_dir, full_audio_dialogue
 
 
 if __name__ == "__main__":
