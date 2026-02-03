@@ -145,7 +145,7 @@ class Agent:
                     "Content-Type": "application/json",
                 },
                 data=json.dumps({
-                    "model": "openai/gpt-4o-mini",
+                    "model": "openai/gpt-4o",
                     "messages": self.conversation_history,
                     "tools": tools,
                     "tool_choice": "auto",
