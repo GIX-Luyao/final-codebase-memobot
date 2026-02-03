@@ -150,8 +150,8 @@ class RealtimeAgent:
         try:
             from query_pipeline.query import retrieve_and_rank
             
-            print(f"[DEBUG] Querying vector DB with: {query}")
-            
+            print(f"[DEBUG] Querying vector DB with: {query}" + (f" (person_id={self.person_id})" if self.person_id else ""))
+
             results = retrieve_and_rank(
                 question=query,
                 index_name="twelve-labs",
@@ -159,6 +159,7 @@ class RealtimeAgent:
                 alpha=0.5,
                 beta=0.3,
                 gamma=0.2,
+                person_id=self.person_id,
             )
             
             for r in results:

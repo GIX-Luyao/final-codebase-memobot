@@ -10,7 +10,7 @@ FinalScore = alpha * relevance + beta * importance + gamma * time_decay
 import os
 import math
 from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from dotenv import load_dotenv
 from twelvelabs import TwelveLabs
@@ -118,28 +118,40 @@ def retrieve_and_rank(
     alpha: float = 0.5,   # relevance weight
     beta: float = 0.3,    # importance weight
     gamma: float = 0.2,   # time-decay weight
+    person_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     1) Embed the question using TwelveLabs.
-    2) Query Pinecone for similar embeddings.
+    2) Query Pinecone for similar embeddings (optionally filtered by person_id).
     3) Combine:
        - relevance (Pinecone score)
        - importance (metadata['importance_score'])
        - time (time decay from metadata['timestamp_utc'])
        into a final score and re-rank.
 
+    person_id: Required for vector DB: only memories whose metadata person_ids
+               contains this ID are returned. If None (no recognized user),
+               returns no vector results.
+
     Returns list of dicts:
         {id, relevance_score, importance_score, time_score, final_score, metadata}
     """
+    # No recognized user → no vector DB results
+    if not person_id:
+        return []
+
     # 1. Get query embedding
     query_embedding = get_text_embedding(question)
 
-    # 2. Query Pinecone
+    # 2. Query Pinecone with metadata filter: only vectors for this person
+    # Per https://docs.pinecone.io/guides/search/filter-by-metadata
+    # person_ids is stored as a list; $in matches vectors where the field is in the given list
     index = pc.Index(index_name)
     res = index.query(
         vector=query_embedding,
         top_k=top_k,
         include_metadata=True,
+        filter={"person_ids": {"$in": [person_id]}},
     )
 
     # Support both obj-style and dict-style access
@@ -207,7 +219,7 @@ def retrieve_and_rank(
             deduped.append(r)
             if vid is not None:
                 seen_pegasus_video_ids.add(vid)
-    return deduped
+    return deduped[:top_k]
 
 
 # --------- CLI ENTRYPOINT ---------

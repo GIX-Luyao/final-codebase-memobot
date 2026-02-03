@@ -9,6 +9,7 @@ import os
 import json
 import shutil
 import sys
+import time
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,7 +26,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # Import your submodules
 try:
     from process_video import process_video, DATA_DIR
-    from vector_db import ingest_data
+    from vector_db import (
+        ingest_data,
+        run_embeddings_only,
+        run_pegasus_caption_only,
+        merge_and_upsert,
+    )
 except ImportError as e:
     print(f"[Critical Error] Could not import local modules: {e}")
     sys.exit(1)
@@ -63,37 +69,68 @@ async def _process_one_video(
     clip_length: int,
     memobot_service: MemobotService = None,
     memobot_group_id: str = None,
-) -> dict:
-    
+) -> tuple[dict, dict]:
+    """Returns (ingest_result, timings_dict)."""
     if memobot_group_id is None:
         memobot_group_id = DEFAULT_MEMOBOT_GROUP_ID
 
     video_path_str = str(video_path.resolve())
-    
-    # --- Step 1: Process Video ---
-    print("\n" + "=" * 60)
-    print("Step 1: process_video (Diarization, TalkNet, Face Matching)")
-    print("=" * 60)
-    
-    # Logic and timing are now handled inside process_video.py
-    results, intermediate_dir = process_video(video_filename)
-    
-    print(f"Processed {len(results)} speaker turns.")
+    loop = asyncio.get_event_loop()
+    timings: dict[str, float] = {}
 
-    # --- Step 2: Vector DB ---
+    # --- Run in parallel: (1) Diarization+TalkNet+DeepFace  ||  (2) Memory builder (embeddings || caption) ---
     print("\n" + "=" * 60)
-    print("Step 2: vector_db (Embeddings -> Pinecone)")
+    print("Parallel: Diarization+TalkNet+DeepFace  ||  Memory builder (Embeddings || Pegasus caption)")
     print("=" * 60)
-    
-    ingest_result = ingest_data(
+
+    t_total_start = time.perf_counter()
+
+    process_video_future = loop.run_in_executor(
+        None,
+        lambda: process_video(video_filename),
+    )
+    embeddings_future = loop.run_in_executor(
+        None,
+        lambda: run_embeddings_only(video_path_str, index_name, clip_length),
+    )
+    pegasus_future = loop.run_in_executor(
+        None,
+        lambda: run_pegasus_caption_only(video_path_str, clip_length),
+    )
+
+    results, intermediate_dir, full_audio_dialogue = await process_video_future
+    timings["branch_a_s"] = time.perf_counter() - t_total_start
+    print(f"[Timing] Branch A (Diarization+TalkNet+DeepFace) completed in {timings['branch_a_s']:.2f}s")
+
+    embeddings_result = await embeddings_future
+    pegasus_result = await pegasus_future
+    timings["branch_b_s"] = time.perf_counter() - t_total_start
+    print(f"[Timing] Branch B (Memory builder: Embeddings + Pegasus caption) completed in {timings['branch_b_s']:.2f}s")
+
+    print(f"[Diarization+TalkNet+DeepFace] Processed {len(results)} speaker turns.")
+    print("[Memory builder] Embeddings and Pegasus caption completed.")
+
+    # --- Merge and upsert (uses process_video results for person_ids / audio_dialogue) ---
+    print("\n" + "=" * 60)
+    print("Merge: Pinecone upsert (embeddings + metadata from diarization + caption)")
+    print("=" * 60)
+
+    t_merge_start = time.perf_counter()
+    ingest_result = merge_and_upsert(
         video_source=video_path_str,
         index_name=index_name,
         clip_length=clip_length,
+        embeddings_result=embeddings_result,
+        pegasus_result=pegasus_result,
         process_video_results=results,
         memobot_group_id=memobot_group_id,
+        full_audio_dialogue=full_audio_dialogue,
     )
-    
-    return ingest_result
+    timings["merge_s"] = time.perf_counter() - t_merge_start
+    timings["total_s"] = time.perf_counter() - t_total_start
+    print(f"[Timing] Merge took {timings['merge_s']:.2f}s | Total (parallel + merge) {timings['total_s']:.2f}s")
+
+    return ingest_result, timings
 
 
 async def ingest_to_graph(final_outputs: list[dict], memobot_service: MemobotService):
@@ -175,18 +212,20 @@ async def main_async():
         videos_to_process = [(p, p.name) for p in all_videos]
 
     final_outputs: list[dict] = []
+    all_timings: list[dict] = []
 
     # --- Main Loop ---
     for video_path, video_filename in videos_to_process:
         print(f"\n>>> Processing Video: {video_path.name}")
-        
+
         try:
-            ingest_result = await _process_one_video(
+            ingest_result, timings = await _process_one_video(
                 video_path, video_filename, index_name, clip_length,
                 memobot_service, DEFAULT_MEMOBOT_GROUP_ID
             )
-            
-            # Extract Results (audio_dialogue = person_id-to-voice; person_ids = all users who talked)
+            all_timings.append({"video": video_path.name, **timings})
+
+            # Extract Results (audio_dialogue = robot + person_id only; person_ids = all users who talked)
             clip_summary = ingest_result.get("summary")
             audio_dialogue = ingest_result.get("audio_dialogue")
             person_ids = ingest_result.get("person_ids") or []
@@ -203,7 +242,7 @@ async def main_async():
             print(f"[ERROR] Failed processing {video_filename}: {e}")
             continue
 
-    # --- Final Output (audio_dialogue + person_ids; no speaker_id) ---
+    # --- Final Output (audio_dialogue: robot + person_id only; person_ids; timings) ---
     all_audio = []
     all_person_ids = set()
     for p in final_outputs:
@@ -222,6 +261,18 @@ async def main_async():
     if final_outputs:
         print("\nPer-person (for graph):")
         print(json.dumps(final_outputs, indent=2))
+
+    # --- Final timings ---
+    print("\n" + "=" * 60)
+    print("TIMINGS (Branch A, Branch B, Merge, Total)")
+    print("=" * 60)
+    for t in all_timings:
+        video = t.get("video", "")
+        print(f"  {video}: Branch A={t.get('branch_a_s', 0):.2f}s  Branch B={t.get('branch_b_s', 0):.2f}s  Merge={t.get('merge_s', 0):.2f}s  Total={t.get('total_s', 0):.2f}s")
+    if all_timings:
+        totals = {k: sum(t.get(k, 0) for t in all_timings) for k in ("branch_a_s", "branch_b_s", "merge_s", "total_s")}
+        print("  (sum across videos):", "  ".join(f"{k}={v:.2f}s" for k, v in totals.items()))
+    print("=" * 60)
 
     # --- Step 3: Graph ---
     await ingest_to_graph(final_outputs, memobot_service)

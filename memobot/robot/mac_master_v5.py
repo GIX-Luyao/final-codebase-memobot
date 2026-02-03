@@ -366,13 +366,14 @@ async def main():
         print("[Video] Recognizing user...")
         person = recognize_user_from_frame(first_frame)
         name = person.get("name") if person else None
-        print(f"[User] {name or 'Unknown'}")
-        
+        person_id = person.get("person_id") if person else None
+        print(f"[User] {name or 'Unknown'}" + (f" (person_id={person_id})" if person_id else ""))
+
         if original_server.use_realtime:
             key = os.environ.get("OPENAI_API_KEY")
             if key:
                 print("[System] Starting Realtime Agent...")
-                original_server.agent_instance = original_server.ServerRealtimeAgent(key, user_name=name)
+                original_server.agent_instance = original_server.ServerRealtimeAgent(key, user_name=name, person_id=person_id)
                 asyncio.create_task(original_server.agent_instance.run())
 
     # Main Loop

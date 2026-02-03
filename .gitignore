@@ -22,6 +22,7 @@ venv/
 ENV/
 .venv
 
+*.png
 *.mp4
 *.wav
 *.avi

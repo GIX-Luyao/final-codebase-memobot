@@ -24,8 +24,9 @@ def main():
     print(f"[main] Recognizing user from image: {image_path}")
     person = recognize_user(image_path=str(image_path))
     name = person["name"]
-    print(f"[main] Recognized: {name}. Starting robo_client with user in system prompt.\n")
-    run_realtime_mode(user_name=name)
+    person_id = person.get("person_id")
+    print(f"[main] Recognized: {name} (person_id={person_id}). Starting robo_client.\n")
+    run_realtime_mode(user_name=name, person_id=person_id)
 
 
 if __name__ == "__main__":
