@@ -220,13 +220,15 @@ def match_query_to_db(
     enforce_detection: bool,
     align: bool,
     distance_metric: str,
+    verbose: bool = True,
 ) -> Tuple[Optional[str], Optional[str], Optional[float]]:
     """
     Returns (best_person_id, best_db_image_path, best_distance)
     """
     start_time = time.time()
-    print(f"[Timing] Face recognition started at {time.strftime('%H:%M:%S', time.localtime(start_time))} for {query_img.name}")
-    
+    if verbose:
+        print(f"[Timing] Face recognition started at {time.strftime('%H:%M:%S', time.localtime(start_time))} for {query_img.name}")
+
     q_emb = get_embedding(
         img_path=query_img,
         model_name=model_name,
@@ -237,7 +239,8 @@ def match_query_to_db(
     if q_emb is None:
         end_time = time.time()
         elapsed = end_time - start_time
-        print(f"[Timing] Face recognition ended at {time.strftime('%H:%M:%S', time.localtime(end_time))} for {query_img.name} (no face detected, took {elapsed:.3f}s)")
+        if verbose:
+            print(f"[Timing] Face recognition ended at {time.strftime('%H:%M:%S', time.localtime(end_time))} for {query_img.name} (no face detected, took {elapsed:.3f}s)")
         return None, None, None
 
     if distance_metric == "cosine":
@@ -266,8 +269,9 @@ def match_query_to_db(
 
     end_time = time.time()
     elapsed = end_time - start_time
-    print(f"[Timing] Face recognition ended at {time.strftime('%H:%M:%S', time.localtime(end_time))} for {query_img.name} (took {elapsed:.3f}s)")
-    
+    if verbose:
+        print(f"[Timing] Face recognition ended at {time.strftime('%H:%M:%S', time.localtime(end_time))} for {query_img.name} (took {elapsed:.3f}s)")
+
     return best_pid, best_db_img, best_dist
 
 

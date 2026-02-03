@@ -65,13 +65,22 @@ CHUNK_DURATION_MS = 100
 CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
 
 
-# Base system instructions for Realtime API; user identity is appended via session.update when recognized.
+# Base system instructions for Realtime API; current speaker is pushed via conversation.item.create (system message) when recognized.
 BASE_INSTRUCTIONS = (
-    "You are a helpful assistant with access to a memory system. You must speak english. "
-    "When users ask about past events, use the retrieveMemory function to find relevant information. "
-    "When you are unsure, do not make up information. Keep responses concise for voice interaction. "
-    "Always address the user by name if you know it."
+    "You are a helpful voice assistant. Speak English only. Keep replies short.\n\n"
+    "WHO YOU ARE TALKING TO: Different people use this system. The current speaker is the only user you address. "
+    "Use their name if you know it. Talk to this person only; do not mix in other users' info.\n\n"
+    "MEMORY: If the user asks about the past, preferences, people, or anything that might be in memory, call retrieveMemory first. Use their Person ID"
+    "Do not answer from memory without calling it. Do not guess. If unsure, say so.\n\n"
+    "RULES: Do not make up facts. Be concise."
 )
+
+
+def _instructions_for_user(user_name: str | None) -> str:
+    """Build full instructions with current user for initial session only. Speaker updates use conversation.item.create (system message)."""
+    if not user_name:
+        return BASE_INSTRUCTIONS
+    return f"{BASE_INSTRUCTIONS}\n\nThe user you are speaking with right now is {user_name}. Address only this person."
 
 
 class RealtimeAgent:
@@ -103,10 +112,7 @@ class RealtimeAgent:
         
     async def get_ephemeral_token(self):
         """Get an ephemeral client secret for WebSocket connection."""
-        if self.user_name:
-            instructions = f"{BASE_INSTRUCTIONS} The user you are speaking with is {self.user_name}."
-        else:
-            instructions = BASE_INSTRUCTIONS
+        instructions = _instructions_for_user(self.user_name)
         session_config = {
             "model": "gpt-4o-realtime-preview-2024-12-17",
             "voice": "verse",
@@ -151,24 +157,28 @@ class RealtimeAgent:
 
     async def update_speaker_identity(self, user_name, person_id=None):
         """
-        Send a session.update event to inform the Realtime API of the current speaker.
+        Send a conversation.item.create (system message) to inform the Realtime API of the current speaker.
         Call this as soon as facial recognition identifies a user (or when the user changes).
         When person_id is provided (e.g. from face recognition DB), use it for memory queries;
         otherwise fall back to user_{name}_001 for backward compatibility.
         """
         if not self.ws:
             return
-        if user_name:
-            dynamic_instructions = f"{BASE_INSTRUCTIONS} The user you are speaking with is {user_name}."
-        else:
-            dynamic_instructions = BASE_INSTRUCTIONS
+        text = (
+            f"Current Speaker: {user_name}. Address {user_name} directly now."
+            + (f"This is their person_id to retrieve memories: {person_id})" if person_id else "")
+            if user_name
+            else "Current speaker is a completely new user. Make sure to address this person specifically and not who was mentioned before."
+        )
         event = {
-            "type": "session.update",
-            "session": {
-                "instructions": dynamic_instructions
-            }
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "system",
+                "content": [{"type": "input_text", "text": text}],
+            },
         }
-        print(f"[Realtime] Updating speaker to: {user_name or 'Unknown'}" + (f" (person_id={person_id})" if person_id else ""))
+        print(f"[Realtime] Updating speaker to: {user_name or 'a completely new user'}" + (f" (person_id={person_id})" if person_id else ""))
         await self.ws.send(json.dumps(event))
         # Keep agent state in sync for retrieve_memory / person_id
         self.user_name = user_name

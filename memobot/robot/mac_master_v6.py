@@ -272,7 +272,7 @@ def recognize_user_from_frame(frame):
     cv2.imwrite(str(tmp_path), frame)
     try:
         from recognize_user import recognize_user
-        person = recognize_user(image_path=str(tmp_path))
+        person = recognize_user(image_path=str(tmp_path), verbose=False)
         tmp_path.unlink(missing_ok=True)
         if person is None: return None
         
@@ -465,7 +465,7 @@ async def main():
             name_for_api = speaker.get("name") if speaker else None
             if name_for_api != _last_speaker_sent_to_api:
                 person_id = speaker.get("person_id") if speaker else None
-                print(f"[Speaker] person_id={person_id} name={name_for_api or 'Unknown'}")
+                print(f"[Person Record]: person_id: {person_id}, name: {name_for_api or 'Unknown'}")
                 if original_server.use_realtime and original_server.agent_instance and getattr(original_server.agent_instance, "session_connected", False):
                     await original_server.agent_instance.update_speaker_identity(name_for_api, person_id=person_id)
                 _last_speaker_sent_to_api = name_for_api

@@ -16,9 +16,10 @@ def get_db_connection():
     return conn
 
 
-def init_database():
+def init_database(verbose=True):
     """Initialize the database and create the persons table if it doesn't exist.
-    Schema has no speaker_id; identity is by face_id only."""
+    Schema has no speaker_id; identity is by face_id only.
+    verbose: If False, suppress log messages (e.g. when used from realtime speaker-ID)."""
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -51,7 +52,8 @@ def init_database():
         """)
         cursor.execute("DROP TABLE persons")
         cursor.execute("ALTER TABLE persons_new RENAME TO persons")
-        print("[Database] Migrated persons table: removed speaker_id column")
+        if verbose:
+            print("[Database] Migrated persons table: removed speaker_id column")
 
     # Create indexes for faster lookups
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_face_id ON persons(face_id)")
@@ -59,7 +61,8 @@ def init_database():
 
     conn.commit()
     conn.close()
-    print(f"[Database] Initialized database at {DB_PATH}")
+    if verbose:
+        print(f"[Database] Initialized database at {DB_PATH}")
 
 
 def add_person(face_id: str, name: str) -> str:

@@ -47,11 +47,12 @@ FACE_CACHE_PATH = PACKAGE_ROOT / "deepface" / "db_embeddings.pkl"
 match_face.set_mac_stability_env(max_threads=1)
 
 
-def recognize_user(image_path=None):
+def recognize_user(image_path=None, verbose=True):
     """Recognize a user from an image and output their database record.
 
     Args:
         image_path: Path to the query image. Defaults to query_pipeline/image.png.
+        verbose: If True, print [Info], [Timing], [Match], and person record. If False, only errors (for speaker-ID in realtime).
     """
     path = Path(image_path) if image_path else IMAGE_PATH
     if not path.exists():
@@ -59,18 +60,19 @@ def recognize_user(image_path=None):
         print(f"[Info] Please place an image in the query_pipeline directory or pass a valid path")
         sys.exit(1)
 
-    print(f"[Info] Loading image: {path}")
-    
+    if verbose:
+        print(f"[Info] Loading image: {path}")
+
     # Ensure database is initialized
-    init_database()
-    
-    # Load or build face database cache
-    print(f"[Info] Loading face database from: {FACE_DATABASE_DIR}")
-    
+    init_database(verbose=verbose)
+
+    if verbose:
+        print(f"[Info] Loading face database from: {FACE_DATABASE_DIR}")
+
     if not FACE_DATABASE_DIR.exists():
         print(f"[Error] Face database directory not found: {FACE_DATABASE_DIR}")
         sys.exit(1)
-    
+
     # Build/load DB embeddings cache
     try:
         db_map = match_face.ensure_db_cache(
@@ -83,22 +85,24 @@ def recognize_user(image_path=None):
             distance_metric=FACE_DISTANCE_METRIC,
             rebuild=False,
         )
-        
+
         if not db_map:
             print(f"[Error] No valid face embeddings in database")
             print(f"[Info] Try running onboarding/create_new_person.py first")
             sys.exit(1)
-        
-        print(f"[Info] Face database loaded: {len(db_map)} person(s)")
-        
+
+        if verbose:
+            print(f"[Info] Face database loaded: {len(db_map)} person(s)")
+
     except Exception as e:
         print(f"[Error] Failed to load face database: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
-    
+
     # Match the query image to the database
-    print(f"\n[Info] Matching face in image...")
+    if verbose:
+        print(f"\n[Info] Matching face in image...")
     try:
         face_id, db_image, distance = match_face.match_query_to_db(
             query_img=path,
@@ -108,46 +112,48 @@ def recognize_user(image_path=None):
             enforce_detection=FACE_ENFORCE_DETECTION,
             align=FACE_ALIGN,
             distance_metric=FACE_DISTANCE_METRIC,
+            verbose=verbose,
         )
-        
+
         if face_id is None:
             print(f"[Error] No face detected in image or no match found")
             sys.exit(1)
-        
-        print(f"[Match] Found match: face_id={face_id}, distance={distance:.4f}")
-        print(f"[Match] Matched database image: {db_image}")
-        
+
+        if verbose:
+            print(f"[Match] Found match: face_id={face_id}, distance={distance:.4f}")
+            print(f"[Match] Matched database image: {db_image}")
+
     except Exception as e:
         print(f"[Error] Face matching failed: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
-    
+
     # Query the database for person information
-    print(f"\n[Info] Querying database for face_id: {face_id}")
+    if verbose:
+        print(f"\n[Info] Querying database for face_id: {face_id}")
     try:
         person = get_person_by_face_id(face_id)
-        
+
         if person is None:
             print(f"[Error] Person not found in database for face_id: {face_id}")
             print(f"[Info] The face was matched but no database record exists")
             sys.exit(1)
-        
-        # Output the person record
-        print(f"\n=== Person Record ===")
-        print(f"person_id: {person['person_id']}")
-        print(f"face_id: {person['face_id']}")
-        print(f"name: {person['name']}")
-        print(f"created_at: {person['created_at']}")
-        print(f"updated_at: {person['updated_at']}")
-        
-        # Also output as a dictionary for programmatic use
-        print(f"\n=== Full Record (dict) ===")
-        print(person)
+
+        # Output the person record (only when verbose)
+        if verbose:
+            print(f"\n=== Person Record ===")
+            print(f"person_id: {person['person_id']}")
+            print(f"face_id: {person['face_id']}")
+            print(f"name: {person['name']}")
+            print(f"created_at: {person['created_at']}")
+            print(f"updated_at: {person['updated_at']}")
+            print(f"\n=== Full Record (dict) ===")
+            print(person)
         # Include distance for confidence checks (lower = better for cosine)
         person["distance"] = distance
         return person
-        
+
     except Exception as e:
         print(f"[Error] Database query failed: {e}")
         import traceback
