@@ -138,7 +138,6 @@ def recognize_user(image_path=None):
         print(f"person_id: {person['person_id']}")
         print(f"face_id: {person['face_id']}")
         print(f"name: {person['name']}")
-        print(f"speaker_id: {person['speaker_id'] if person['speaker_id'] else 'None'}")
         print(f"created_at: {person['created_at']}")
         print(f"updated_at: {person['updated_at']}")
         

@@ -7,7 +7,7 @@ This script:
 2. Extracts the filename (without extension) as the person's name
 3. Generates a random UUID for face_id
 4. Copies images to the face_database folder with UUID as filename
-5. Creates database records with person_id, face_id (UUID), name (speaker_id is NULL initially)
+5. Creates database records with person_id, face_id (UUID), name
 6. Generates DeepFace embeddings and updates the embedding cache (skips if already exists)
 
 Usage:
@@ -248,7 +248,7 @@ def process_new_users():
         
         # Add person to database
         try:
-            person_id = add_person(face_id=face_id, name=name, speaker_id=None)
+            person_id = add_person(face_id=face_id, name=name)
             print(f"  [OK] Created database record: person_id={person_id}")
         except Exception as e:
             print(f"  [Error] Failed to create database record: {e}")

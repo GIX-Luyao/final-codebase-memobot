@@ -3,10 +3,6 @@
 Ingest pipeline entrypoint (data-folder based):
 - By default: process every video in ingest_pipeline/data/, then run vector_db for each.
 - Optional: pass a single video path/filename to process just that file.
-
-1. Run process_video (diarization, face extraction, face matching) → final_results
-2. Run vector_db to get metadata JSON for vector embedding and upsert into Pinecone
-   (Pegasus summaries use spoken words and speaker identity from process_video)
 """
 
 import os
@@ -16,43 +12,41 @@ import sys
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
-from dotenv import dotenv_values
+from dotenv import dotenv_values, load_dotenv
 
 MEMOBOT_ROOT = Path(__file__).resolve().parent.parent
-DOTENV_PATH = MEMOBOT_ROOT / ".env"
+PROJECT_ROOT = MEMOBOT_ROOT.parent
+DOTENV_PATH = PROJECT_ROOT / ".env"
+load_dotenv(DOTENV_PATH)
 _ENV = dotenv_values(DOTENV_PATH)
 
-# Ensure ingest_pipeline is on path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from process_video import process_video, DATA_DIR
-from vector_db import ingest_data
+# Import your submodules
+try:
+    from process_video import process_video, DATA_DIR
+    from vector_db import ingest_data
+except ImportError as e:
+    print(f"[Critical Error] Could not import local modules: {e}")
+    sys.exit(1)
 
-# Allow importing from root directory (for Memobot package)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 try:
     from Memobot import MemobotService
 except ImportError:
     print("[Warning] Memobot package not found. Knowledge Graph ingestion will be skipped.")
     MemobotService = None
-    exit(1)
 except Exception as e:
     print(f"[Error] Failed to import MemobotService: {e}")
     exit(1)
 
-# Default Pinecone index and clip length (one embedding per 30s clip)
 DEFAULT_INDEX_NAME = "twelve-labs"
 DEFAULT_CLIP_LENGTH = 30
-
-# Knowledge Graph tenant/group id (keep configurable so ingest + query share the same graph)
 DEFAULT_MEMOBOT_GROUP_ID = os.getenv("MEMOBOT_GROUP_ID", "tenant_003")
-
-# Video extensions to discover in data/
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
 
 
 def _videos_in_data_dir() -> list[Path]:
-    """Return sorted list of video paths in ingest_pipeline/data/."""
     if not DATA_DIR.exists():
         return []
     out = []
@@ -70,18 +64,27 @@ async def _process_one_video(
     memobot_service: MemobotService = None,
     memobot_group_id: str = None,
 ) -> dict:
+    
     if memobot_group_id is None:
         memobot_group_id = DEFAULT_MEMOBOT_GROUP_ID
-    video_path_str = str(video_path.resolve())
-    print("=" * 60)
-    print("Step 1: process_video (diarization, faces, face matching)")
-    print("=" * 60)
-    results, intermediate_dir = process_video(video_filename)
-    print(f"Processed {len(results)} speaker turns. Intermediate outputs: {intermediate_dir}")
 
+    video_path_str = str(video_path.resolve())
+    
+    # --- Step 1: Process Video ---
     print("\n" + "=" * 60)
-    print("Step 2: vector_db (embeddings + Pegasus metadata → Pinecone)")
+    print("Step 1: process_video (Diarization, TalkNet, Face Matching)")
     print("=" * 60)
+    
+    # Logic and timing are now handled inside process_video.py
+    results, intermediate_dir = process_video(video_filename)
+    
+    print(f"Processed {len(results)} speaker turns.")
+
+    # --- Step 2: Vector DB ---
+    print("\n" + "=" * 60)
+    print("Step 2: vector_db (Embeddings -> Pinecone)")
+    print("=" * 60)
+    
     ingest_result = ingest_data(
         video_source=video_path_str,
         index_name=index_name,
@@ -89,21 +92,16 @@ async def _process_one_video(
         process_video_results=results,
         memobot_group_id=memobot_group_id,
     )
-    print("\nIngest complete.")
-
+    
     return ingest_result
 
 
 async def ingest_to_graph(final_outputs: list[dict], memobot_service: MemobotService):
-    """
-    Reformat final_outputs and build the knowledge graph.
-    """
     if not memobot_service or not final_outputs:
-        print("[Warning] MemobotService not available or no final outputs to ingest.")
         return
 
     print("\n" + "=" * 60)
-    print("Step 3: Building Knowledge Graph from Final Outputs")
+    print("Step 3: Building Knowledge Graph")
     print("=" * 60)
 
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -118,46 +116,42 @@ async def ingest_to_graph(final_outputs: list[dict], memobot_service: MemobotSer
             "person_name": name,
             "person_id": pid,
             "text": text_content,
-            "robot_pos_list": [],  # No robot position data available
+            "robot_pos_list": [],
             "timestamp": timestamp,
         }
 
         try:
             await memobot_service.build(input_data)
-            print(f"[OK] Knowledge graph built successfully for {name} ({pid})")
+            print(f"[OK] Graph built for {name}")
         except Exception as e:
-            print(f"[ERROR] Failed to build knowledge graph for {name}: {e}")
+            print(f"[ERROR] Graph build failed for {name}: {e}")
 
 
 async def main_async():
-    # Optional args: [video_path_or_filename] [index_name] [clip_length_sec]
+    # CLI Argument Parsing
     index_name = DEFAULT_INDEX_NAME
     clip_length = DEFAULT_CLIP_LENGTH
-    videos_to_process: list[tuple[Path, str]] = []  # (path, filename for process_video)
+    videos_to_process: list[tuple[Path, str]] = []
 
-    # Initialize MemobotService
+    # Init Memobot
     memobot_service = None
     if MemobotService:
         try:
             memobot_service = MemobotService.from_env(group_id=DEFAULT_MEMOBOT_GROUP_ID)
-            print(f"[Info] MemobotService initialized (group_id={DEFAULT_MEMOBOT_GROUP_ID})")
+            print(f"[Info] MemobotService initialized.")
         except Exception as e:
             print(f"[Warning] Failed to initialize MemobotService: {e}")
-    if len(sys.argv) >= 2:
-        # Explicit video: path or filename under data/
-        video_arg = sys.argv[1]
-        if len(sys.argv) >= 3:
-            index_name = sys.argv[2]
-        if len(sys.argv) >= 4:
-            clip_length = int(sys.argv[3])
 
-        if os.path.isabs(video_arg) or "/" in video_arg or "\\" in video_arg:
-            video_path = Path(video_arg)
-        else:
-            video_path = DATA_DIR / video_arg
+    # Determine Videos
+    if len(sys.argv) >= 2:
+        video_arg = sys.argv[1]
+        if len(sys.argv) >= 3: index_name = sys.argv[2]
+        if len(sys.argv) >= 4: clip_length = int(sys.argv[3])
+
+        video_path = Path(video_arg) if (os.path.isabs(video_arg) or "/" in video_arg) else DATA_DIR / video_arg
 
         if not video_path.exists():
-            print(f"Error: Video not found: {video_path}", file=sys.stderr)
+            print(f"Error: Video not found: {video_path}")
             sys.exit(1)
 
         video_path = video_path.resolve()
@@ -170,62 +164,67 @@ async def main_async():
             shutil.copy2(video_path, dest)
             video_filename = video_path.name
             video_path = dest
-            print(f"Copied video to {dest} for process_video")
+            print(f"Copied video to {dest}")
 
         videos_to_process = [(video_path, video_filename)]
     else:
-        # No args: process everything in data/ with default index and clip length
         all_videos = _videos_in_data_dir()
         if not all_videos:
-            print("Usage: python main.py [video_path_or_filename] [index_name] [clip_length_sec]")
-            print("  No args: process all videos in ingest_pipeline/data/")
-            print("  video_path_or_filename: path or filename under data/ to process a single video")
-            print("  index_name: (optional) Pinecone index name, default: twelve-labs")
-            print("  clip_length_sec: (optional) clip length for one embedding/summary, default: 30")
-            print(f"\nNo video files found in {DATA_DIR} (extensions: {VIDEO_EXTENSIONS})")
+            print("No video files found.")
             sys.exit(1)
         videos_to_process = [(p, p.name) for p in all_videos]
-        print(f"Processing {len(videos_to_process)} video(s) from {DATA_DIR}")
 
     final_outputs: list[dict] = []
 
+    # --- Main Loop ---
     for video_path, video_filename in videos_to_process:
-        print(f"\n>>> Processing: {video_path.name}")
-        ingest_result = await _process_one_video(
-            video_path, video_filename, index_name, clip_length,
-            memobot_service, DEFAULT_MEMOBOT_GROUP_ID,
-        )
-
-        # Per your request: output {person_id, name, clip_summary}.
-        clip_summary = ingest_result.get("summary")
-        audio_dialogue = ingest_result.get("audio_dialogue")
-        for p in ingest_result.get("persons", []) or []:
-            pid = p.get("person_id")
-            name = p.get("name")
-            if pid and name:
-                final_outputs.append(
-                    {
-                        "person_id": pid,
-                        "name": name,
+        print(f"\n>>> Processing Video: {video_path.name}")
+        
+        try:
+            ingest_result = await _process_one_video(
+                video_path, video_filename, index_name, clip_length,
+                memobot_service, DEFAULT_MEMOBOT_GROUP_ID
+            )
+            
+            # Extract Results (audio_dialogue = person_id-to-voice; person_ids = all users who talked)
+            clip_summary = ingest_result.get("summary")
+            audio_dialogue = ingest_result.get("audio_dialogue")
+            person_ids = ingest_result.get("person_ids") or []
+            for p in ingest_result.get("persons", []) or []:
+                if p.get("person_id") and p.get("name"):
+                    final_outputs.append({
+                        "person_id": p.get("person_id"),
+                        "name": p.get("name"),
                         "clip_summary": clip_summary,
                         "audio_dialogue": audio_dialogue,
-                    }
-                )
+                        "person_ids": person_ids,
+                    })
+        except Exception as e:
+            print(f"[ERROR] Failed processing {video_filename}: {e}")
+            continue
+
+    # --- Final Output (audio_dialogue + person_ids; no speaker_id) ---
+    all_audio = []
+    all_person_ids = set()
+    for p in final_outputs:
+        if p.get("audio_dialogue"):
+            all_audio.append(p["audio_dialogue"])
+        if p.get("person_id"):
+            all_person_ids.add(p["person_id"])
+    final_json = {
+        "audio_dialogue": "\n---\n".join(all_audio) if all_audio else "",
+        "person_ids": list(all_person_ids),
+    }
     print("\n" + "=" * 60)
-    print("FINAL JSON OUTPUT")
+    print("FINAL JSON OUTPUT (audio_dialogue + person_ids)")
     print("=" * 60)
-    print(json.dumps(final_outputs, indent=2))
+    print(json.dumps(final_json, indent=2))
+    if final_outputs:
+        print("\nPer-person (for graph):")
+        print(json.dumps(final_outputs, indent=2))
 
-    print("================================================")
-
-    # Step 3: Build Knowledge Graph using final_outputs
+    # --- Step 3: Graph ---
     await ingest_to_graph(final_outputs, memobot_service)
-
-    
-    
-    # Note: memobot_service.close() is NOT called here anymore.
-    # It should be managed by the caller of main_async if needed, 
-    # or left open for the duration of the agent process.
 
 
 def main():
