@@ -12,10 +12,12 @@ from dotenv import load_dotenv
 # Config
 # ----------------------------
 
-# Memobot repo root (ingest_pipeline/speaker_diarization -> parent.parent.parent)
-MEMOBOT_ROOT = Path(__file__).resolve().parent.parent.parent
+# Memobot package dir (ingest_pipeline/speaker_diarization -> parent.parent.parent)
+_MEMOBOT_PACKAGE = Path(__file__).resolve().parent.parent.parent
+# Project root (one level above package) — where .env lives
+MEMOBOT_ROOT = _MEMOBOT_PACKAGE.parent
 
-# Load .env from memobot root
+# Load .env from project root
 load_dotenv(dotenv_path=MEMOBOT_ROOT / ".env")
 PYANNOTE_API_KEY = os.getenv("PYANNOTE_API_KEY")
 if not PYANNOTE_API_KEY:
@@ -158,6 +160,24 @@ def speech_to_text_diarization(audio_media_url: str) -> List[dict]:
         })
     return norm
 
+def build_single_turn_clip_bytes(local_wav_16k: str, turn: dict) -> bytes:
+    """
+    Build WAV bytes for a single diarization turn (for robot check or identification).
+    """
+    start = float(turn["start"])
+    end = float(turn["end"])
+    if end - start < 0.2:
+        raise ValueError("Turn too short")
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        out_path = f.name
+    try:
+        cut_wav(local_wav_16k, out_path, start, end)
+        return Path(out_path).read_bytes()
+    finally:
+        Path(out_path).unlink(missing_ok=True)
+
+
 def build_single_speaker_clip_bytes(local_wav_16k: str, turns: List[dict], speaker: str) -> bytes:
     """
     Build a <=30s single-speaker enrollment/eval clip by concatenating that speaker's turns.
@@ -185,6 +205,29 @@ def build_single_speaker_clip_bytes(local_wav_16k: str, turns: List[dict], speak
         out_clip = str(Path(td) / "speaker_clip.wav")
         concat_wavs(parts, out_clip)
         return Path(out_clip).read_bytes()
+
+def robot_voiceprints_only() -> Dict[str, Any]:
+    """Return voiceprints dict containing only the 'robot' entry (for filtering robot turns)."""
+    all_vps = load_voiceprints()
+    if "robot" not in all_vps:
+        return {}
+    return {"robot": all_vps["robot"]}
+
+
+def is_robot_voice(clip_media_url: str) -> bool:
+    """
+    Check if a single-speaker clip matches the robot voiceprint in voiceprints.json.
+    Returns True only if the clip is identified as "robot" above threshold.
+    """
+    robot_vps = robot_voiceprints_only()
+    if not robot_vps:
+        return False
+    match_result = identify_clip(clip_media_url, robot_vps)
+    if match_result:
+        label, _ = match_result
+        return label == "robot"
+    return False
+
 
 def identify_clip(clip_media_url: str, voiceprints: Dict[str, Any]) -> Optional[Tuple[str, float]]:
     """

@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 """
 Process Video:
-1. Extract audio and run speaker diarization (with transcription)
-2. For each speaker turn start (with 0.2s buffer), run TalkNet to extract faces
-3. Match faces against face_database to identify face_id
-4. Output: face_id matches which speaker_id (and what they said)
-
-Usage:
-    python process_video.py <video_filename>
-    
-The video should be in the data/ folder.
-Face database images should be in face_database/ folder.
+1. Extract audio and run speaker diarization (Pyannote).
+2. For each turn, check against voiceprints.json robot only; skip robot voice.
+3. For non-robot turns: get frame when that person is talking; run TalkNet and
+   match face to facial_database (DeepFace) in parallel across segments.
+4. Output: JSON with audio_dialogue (person_id-to-voice) and array of person_ids.
+   Person DB has no speaker_id; identity is by face_id -> person_id only.
 """
 
 import os
@@ -19,6 +15,7 @@ import uuid
 import subprocess
 import tempfile
 import time
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import json
@@ -27,72 +24,22 @@ import json
 print("DEBUG_LOG: process_video.py - Top of file")
 # #endregion
 
-# #region agent log
-print("DEBUG_LOG: Before importing cv2")
-# #endregion
 import cv2
-# #region agent log
-print("DEBUG_LOG: After importing cv2")
-# #endregion
-
-# #region agent log
-print("DEBUG_LOG: Before importing numpy")
-# #endregion
 import numpy as np
-# #region agent log
-print("DEBUG_LOG: After importing numpy")
-# #endregion
-
-# #region agent log
-print("DEBUG_LOG: Before importing dotenv")
-# #endregion
 from dotenv import load_dotenv
-# #region agent log
-print("DEBUG_LOG: After importing dotenv")
-# #endregion
-
-# #region agent log
-print("DEBUG_LOG: Before importing requests")
-# #endregion
 import requests
-# #region agent log
-print("DEBUG_LOG: After importing requests")
-# #endregion
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# #region agent log
-print("DEBUG_LOG: Before importing asyncio")
-# #endregion
-import asyncio
-# #region agent log
-print("DEBUG_LOG: After importing asyncio")
-# #endregion
-
-# #region agent log
-print("DEBUG_LOG: Before importing speaker_diarization")
-# #endregion
 # Import speaker diarization functions
 sys.path.insert(0, str(Path(__file__).parent / "speaker_diarization"))
 from enroll_from_local_wav import (
     to_wav_16k_mono,
     upload_local_wav_to_media,
     speech_to_text_diarization,
-    enroll_speakers_from_turns,
-    MEDIA_INPUT,
-    HEADERS_JSON,
-    HEADERS_AUTH,
-    JOBS,
-    submit_job,
-    poll_job,
-    media_put_url,
-    upload_bytes,
+    is_robot_voice,
+    build_single_speaker_clip_bytes,
 )
-# #region agent log
-print("DEBUG_LOG: After importing speaker_diarization")
-# #endregion
 
-# #region agent log
-print("DEBUG_LOG: Before importing talknet")
-# #endregion
 # Import TalkNet functions
 sys.path.insert(0, str(Path(__file__).parent / "talknet"))
 try:
@@ -106,58 +53,39 @@ try:
 except ImportError as e:
     print(f"[Error] Failed to import TalkNet functions: {e}")
     raise
-# #region agent log
-print("DEBUG_LOG: After importing talknet")
-# #endregion
 
-# #region agent log
-print("DEBUG_LOG: Before importing deepface matching")
-# #endregion
 # Import face matching functions
 sys.path.insert(0, str(Path(__file__).parent.parent / "deepface"))
 from match_face import (
     set_mac_stability_env,
-    list_images,
     ensure_db_cache,
     match_query_to_db,
-    person_id_from_path,
 )
-# #region agent log
-print("DEBUG_LOG: After importing deepface matching")
-# #endregion
 
-# #region agent log
-print("DEBUG_LOG: Before importing database")
-# #endregion
-# Import database functions
+# Import database functions (person DB has no speaker_id; identify by face_id only)
 MEMOBOT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(MEMOBOT_ROOT))
-from utils.database import (
-    get_person_by_face_id,
-    update_speaker_id,
-    get_person_by_speaker_id,
-)
-# #region agent log
-print("DEBUG_LOG: After importing database")
-# #endregion
+from utils.database import get_person_by_face_id
 
-# Load .env from memobot root
+# Load .env
 load_dotenv(dotenv_path=MEMOBOT_ROOT / ".env")
-
 load_dotenv()
 PYANNOTE_API_KEY = os.getenv("PYANNOTE_API_KEY")
 if not PYANNOTE_API_KEY:
     raise RuntimeError("Set env var PYANNOTE_API_KEY")
 
-# Configuration (repo root = parent of package for face_database)
+# Configuration
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = Path(__file__).parent / "data"
 FACE_DB_DIR = REPO_ROOT / "face_database"
 TALKNET_REPO = Path(__file__).parent / "talknet"
 INTERMEDIATE_OUTPUTS_DIR = Path(__file__).parent / "intermediate_outputs"
-BUFFER_SEC = 0.2  # Buffer to add before speaker turn start
 
-# Face matching config (from match_face.py defaults)
+# Optimization: Clip window size
+CLIP_PRE_BUFFER = 1.0
+CLIP_POST_BUFFER = 1.0
+BUFFER_SEC = 0.2 
+
 FACE_MODEL = "ArcFace"
 FACE_DETECTOR = "opencv"
 FACE_DISTANCE_METRIC = "cosine"
@@ -165,12 +93,10 @@ FACE_CACHE_PATH = Path(__file__).parent.parent / "deepface" / "db_embeddings.pkl
 
 
 def extract_audio_from_video(video_path: Path, output_wav: Path) -> None:
-    """Extract audio from video and convert to 16k mono WAV."""
     to_wav_16k_mono(str(video_path), str(output_wav))
 
 
 def crop_face_from_frame(frame: np.ndarray, box: Box) -> Optional[np.ndarray]:
-    """Crop a face from a frame using a bounding box."""
     h, w = frame.shape[:2]
     clamped = box.clamp(w, h)
     if clamped.x2 <= clamped.x1 or clamped.y2 <= clamped.y1:
@@ -182,46 +108,22 @@ def crop_face_from_frame(frame: np.ndarray, box: Box) -> Optional[np.ndarray]:
 
 
 def save_face_crop(crop: np.ndarray, output_path: Path) -> None:
-    """Save a face crop image."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(output_path), crop)
 
 
-def extract_faces_at_timestamp(
-    video_path: Path,
-    talknet_repo: Path,
-    video_name: str,
-    timestamp: float,
-    temp_dir: Path,
-) -> Tuple[List[Box], Optional[Box], Optional[np.ndarray]]:
-    """
-    Extract faces at a specific timestamp using TalkNet.
-    Returns: (all_face_boxes, speaker_box, original_frame)
-    """
-    # Ensure video is in demo folder
-    demo_video = ensure_video_in_demo(talknet_repo, video_path, video_name)
-    
-    # Run TalkNet demo
-    annotated_video = run_talknet_demo(
-        talknet_repo, video_name, force=False, confidence_threshold=-0.5
-    )
-    
-    # Read frames at timestamp
-    cap_orig = open_video(demo_video)
-    cap_ann = open_video(annotated_video)
-    
-    try:
-        orig_frame, _ = read_frame_at_timestamp(cap_orig, timestamp)
-        ann_frame, _ = read_frame_at_timestamp(cap_ann, timestamp)
-        
-        # Detect boxes from annotated frame
-        boxes = find_colored_boxes(ann_frame)
-        speaker_box = pick_speaker_box(boxes)
-        
-        return boxes, speaker_box, orig_frame
-    finally:
-        cap_orig.release()
-        cap_ann.release()
+def cut_mini_clip(input_path: Path, output_path: Path, start: float, duration: float):
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", f"{start:.3f}",
+        "-i", str(input_path),
+        "-t", f"{duration:.3f}",
+        "-c:v", "libx264", "-preset", "ultrafast", 
+        "-c:a", "aac",
+        "-strict", "experimental",
+        str(output_path)
+    ]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
 
 
 def match_faces_to_database(
@@ -229,14 +131,8 @@ def match_faces_to_database(
     face_db_dir: Path,
     cache_path: Path,
 ) -> Dict[str, Tuple[Optional[str], Optional[float]]]:
-    """
-    Match face crops against face database.
-    face_crops: List of (face_label, crop_image_array)
-    Returns: Dict mapping face_label -> (matched_face_id, distance)
-    """
     set_mac_stability_env(max_threads=1)
     
-    # Load face database
     db_map = ensure_db_cache(
         db_dir=face_db_dir,
         cache_path=cache_path,
@@ -245,20 +141,13 @@ def match_faces_to_database(
         enforce_detection=False,
         align=False,
         distance_metric=FACE_DISTANCE_METRIC,
-        rebuild=True,  # Always rebuild cache to ensure it matches current face_database directory
+        rebuild=True, 
     )
     
     if not db_map:
-        print(f"[Warning] No face database found in {face_db_dir}")
-        print(f"[Info] Place face images (jpg/png) in {face_db_dir} to enable face matching")
         return {}
     
     results = {}
-    
-    # Save each crop temporarily and match
-    total_start_time = time.time()
-    print(f"[Timing] Total face matching started at {time.strftime('%H:%M:%S', time.localtime(total_start_time))} for {len(face_crops)} faces")
-    
     with tempfile.TemporaryDirectory() as td:
         for face_label, crop in face_crops:
             temp_path = Path(td) / f"{face_label}.jpg"
@@ -273,194 +162,198 @@ def match_faces_to_database(
                 align=False,
                 distance_metric=FACE_DISTANCE_METRIC,
             )
-            
             results[face_label] = (face_id, distance)
-            print(f"[Match] {face_label} -> {face_id} (distance={distance})")
-    
-    total_end_time = time.time()
-    total_elapsed = total_end_time - total_start_time
-    print(f"[Timing] Total face matching ended at {time.strftime('%H:%M:%S', time.localtime(total_end_time))}")
-    print(f"[Timing] Total time for {len(face_crops)} face recognitions: {total_elapsed:.3f}s (avg: {total_elapsed/len(face_crops):.3f}s per face)")
-    
     return results
 
 
 def process_video(video_filename: str) -> Tuple[List[Dict[str, Any]], Path]:
-    """
-    Main pipeline function.
-    Returns (list of results, intermediate_outputs_dir):
-    - results: [{speaker_id, face_id, text, start, end}, ...]
-    - intermediate_outputs_dir: Path to where intermediate outputs were saved
-    """
     video_path = DATA_DIR / video_filename
     if not video_path.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
     
     print(f"[Pipeline] Processing video: {video_path}")
+    pipeline_start_time = time.perf_counter()
     
-    # Create intermediate outputs directory
     run_id = uuid.uuid4().hex[:8]
     intermediate_dir = INTERMEDIATE_OUTPUTS_DIR / f"run_{run_id}"
     intermediate_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[Info] Intermediate outputs will be saved to: {intermediate_dir}")
     
-    # Generate unique video name for TalkNet
-    video_name = f"ingest_{run_id}"
-    
-    # Step 1: Extract audio
+    # --- Step 1: Extract Audio ---
     print("\n=== Step 1: Extracting audio ===")
+    t_start = time.perf_counter()
+    
     audio_output_dir = intermediate_dir / "audio"
     audio_output_dir.mkdir(exist_ok=True)
     audio_wav_path = audio_output_dir / "extracted_audio.wav"
     extract_audio_from_video(video_path, audio_wav_path)
     wav_bytes = audio_wav_path.read_bytes()
-    print(f"[OK] Audio extracted and saved to: {audio_wav_path}")
     
     # Upload to pyannote
     audio_key = f"audio/{uuid.uuid4().hex}.wav"
     audio_media_url = upload_local_wav_to_media(wav_bytes, audio_key)
-    print(f"[OK] Audio uploaded: {audio_media_url}")
     
-    # Step 2: Speaker diarization with transcription
-    print("\n=== Step 2: Speaker diarization ===")
+    t_end = time.perf_counter()
+    print(f"[Timing] Step 1 (Audio Extraction & Upload) took: {t_end - t_start:.2f}s")
+    
+    # --- Step 2: Speaker Diarization ---
+    print("\n=== Step 2: Speaker diarization (Pyannote) ===")
+    t_start = time.perf_counter()
+    
     turns = speech_to_text_diarization(audio_media_url)
     print(f"[OK] Found {len(turns)} speaker turns")
-    for i, t in enumerate(turns, 1):
-        print(f"  [{i:03d}] {t['speaker']} {t['start']:.2f}-{t['end']:.2f}s: {t['text']}")
     
-    # Save diarization results
-    diarization_output = intermediate_dir / "diarization.json"
-    with open(diarization_output, "w") as f:
+    with open(intermediate_dir / "diarization.json", "w") as f:
         json.dump(turns, f, indent=2)
-    print(f"[OK] Diarization results saved to: {diarization_output}")
+
+    t_end = time.perf_counter()
+    print(f"[Timing] Step 2 (Diarization) took: {t_end - t_start:.2f}s")
+
+    # --- Step 2b: Filter robot voice (check once per unique speaker, not per turn) ---
+    print("\n=== Step 2b: Filter robot voice ===")
+    t_start = time.perf_counter()
     
-    # Step 2b: Enroll speakers and map to voiceprint labels
-    print("\n=== Step 2b: Speaker enrollment ===")
-    speaker_to_voiceprint = enroll_speakers_from_turns(
-        turns=turns,
-        local_wav_16k_path=str(audio_wav_path),
-        source_file=str(video_path)
-    )
-    print(f"[OK] Mapped {len(speaker_to_voiceprint)} speakers to voiceprints")
-    for diar_speaker, vp_label in speaker_to_voiceprint.items():
-        print(f"  {diar_speaker} -> {vp_label}")
+    unique_speakers = sorted({t["speaker"] for t in turns})
+    speaker_is_robot = {}
+    for spk in unique_speakers:
+        print(f"[Robot check] {spk}...", flush=True)
+        try:
+            clip_bytes = build_single_speaker_clip_bytes(
+                str(audio_wav_path), turns, spk
+            )
+        except Exception as e:
+            print(f"[Skip] Cannot build clip for {spk}: {e}")
+            speaker_is_robot[spk] = False
+            continue
+        clip_key = f"clips/{uuid.uuid4().hex}_{spk}.wav"
+        clip_media_url = upload_local_wav_to_media(clip_bytes, clip_key)
+        speaker_is_robot[spk] = is_robot_voice(clip_media_url)
+        if speaker_is_robot[spk]:
+            print(f"[Robot] {spk} is robot voice; skipping those turns.")
     
-    # Step 3: Extract faces at each speaker turn start (with buffer)
-    print("\n=== Step 3: Extracting faces at speaker timestamps ===")
+    human_turns = [t for t in turns if not speaker_is_robot.get(t["speaker"], False)]
+    t_end = time.perf_counter()
+    print(f"[Timing] Step 2b (Robot filter) took: {t_end - t_start:.2f}s")
+    print(f"[Info] {len(human_turns)} non-robot turns to process (TalkNet + DeepFace).")
     
-    # Collect unique timestamps (one per speaker turn start)
+    if not human_turns:
+        print("[Warning] No human turns after robot filter.")
+        return [], intermediate_dir
+    
+    # --- Step 3: Targeted TalkNet + Face Matching (parallel per segment) ---
+    print("\n=== Step 3: Active Speaker Detection + Face Match (parallel) ===")
+    t_start = time.perf_counter()
+    
     timestamps_to_process = []
     seen_starts = set()
-    for turn in turns:
-        timestamp = max(0.0, turn["start"] - BUFFER_SEC)
-        if timestamp not in seen_starts:
-            timestamps_to_process.append((timestamp, turn))
-            seen_starts.add(timestamp)
+    for turn in human_turns:
+        ts = max(0.0, turn["start"] - BUFFER_SEC)
+        if ts not in seen_starts:
+            timestamps_to_process.append((ts, turn))
+            seen_starts.add(ts)
+
+    print(f"[Info] Processing {len(timestamps_to_process)} segments in parallel.")
+
+    all_face_crops = []
+    timestamp_to_faces = {}
     
-    print(f"[Info] Processing {len(timestamps_to_process)} unique timestamps (one per speaker turn start)")
-    
-    # Run TalkNet once for the whole video; then we only read frames at each timestamp
-    demo_video = ensure_video_in_demo(TALKNET_REPO, video_path, video_name)
-    annotated_video = run_talknet_demo(
-        TALKNET_REPO, video_name, force=False, confidence_threshold=-0.5
-    )
-    
-    # Extract faces at each timestamp (no TalkNet run—just read frame at that time)
-    all_face_crops = []  # List of (label, crop_image)
-    timestamp_to_faces = {}  # timestamp -> (boxes, speaker_box, frame)
-    
-    # Create directories for face outputs
     faces_output_dir = intermediate_dir / "faces"
     frames_output_dir = intermediate_dir / "frames"
     faces_output_dir.mkdir(exist_ok=True)
     frames_output_dir.mkdir(exist_ok=True)
-    
-    for idx, (timestamp, turn) in enumerate(timestamps_to_process):
-        print(f"\n[Timestamp {idx+1}/{len(timestamps_to_process)}] t={timestamp:.2f}s (speaker: {turn['speaker']})")
-        
-        # Create timestamp-specific directory
-        ts_dir = faces_output_dir / f"t{int(timestamp*1000):06d}"
-        ts_dir.mkdir(exist_ok=True)
-        
+    clips_dir = intermediate_dir / "temp_clips"
+    clips_dir.mkdir(exist_ok=True)
+
+    cap_check = cv2.VideoCapture(str(video_path))
+    total_frames = cap_check.get(cv2.CAP_PROP_FRAME_COUNT)
+    fps_check = cap_check.get(cv2.CAP_PROP_FPS)
+    video_duration = total_frames / fps_check if fps_check > 0 else 0
+    cap_check.release()
+
+    def process_one_segment(args):
+        idx, target_ts, turn = args
+        clip_start = max(0, target_ts - CLIP_PRE_BUFFER)
+        clip_end = min(video_duration, target_ts + CLIP_POST_BUFFER)
+        duration = clip_end - clip_start
+        if duration < 0.5:
+            return (target_ts, turn, None, None, None, [])
+        clip_name = f"clip_{idx}_{int(target_ts*1000)}"
+        clip_path = clips_dir / f"{clip_name}.mp4"
         try:
-            boxes, speaker_box, orig_frame = get_faces_at_timestamp(
-                demo_video=demo_video,
-                annotated_video=annotated_video,
-                timestamp=timestamp,
+            cut_mini_clip(video_path, clip_path, clip_start, duration)
+            ensure_video_in_demo(TALKNET_REPO, clip_path, clip_name)
+            annotated_video_path = run_talknet_demo(
+                TALKNET_REPO, clip_name, force=False, confidence_threshold=-0.5
             )
-            
-            timestamp_to_faces[timestamp] = (boxes, speaker_box, orig_frame)
-            
-            # Save original frame
-            frame_path = frames_output_dir / f"t{int(timestamp*1000):06d}_frame.jpg"
-            cv2.imwrite(str(frame_path), orig_frame)
-            
-            # Draw boxes on frame and save
-            frame_with_boxes = draw_boxes(orig_frame, boxes, speaker_box)
-            frame_annotated_path = frames_output_dir / f"t{int(timestamp*1000):06d}_frame_annotated.jpg"
-            cv2.imwrite(str(frame_annotated_path), frame_with_boxes)
-            
-            # Crop all faces and save
-            for i, box in enumerate(boxes):
-                crop = crop_face_from_frame(orig_frame, box)
-                if crop is not None:
-                    label = f"t{int(timestamp*1000)}_face_{i:02d}_{box.color}"
-                    all_face_crops.append((label, crop))
-                    
-                    # Save face crop
-                    face_crop_path = ts_dir / f"face_{i:02d}_{box.color}.jpg"
-                    save_face_crop(crop, face_crop_path)
-            
-            # Crop speaker face if found and save
-            if speaker_box is not None:
-                speaker_crop = crop_face_from_frame(orig_frame, speaker_box)
-                if speaker_crop is not None:
-                    label = f"t{int(timestamp*1000)}_speaker"
-                    all_face_crops.append((label, speaker_crop))
-                    
-                    # Save speaker face crop
-                    speaker_crop_path = ts_dir / "speaker_face.jpg"
-                    save_face_crop(speaker_crop, speaker_crop_path)
-            
-            print(f"  [OK] Found {len(boxes)} face boxes, speaker_box={'found' if speaker_box else 'not found'}")
-            print(f"  [OK] Saved outputs to: {ts_dir}")
-            
+            relative_ts = target_ts - clip_start
+            boxes, speaker_box, orig_frame = get_faces_at_timestamp(
+                demo_video=clip_path,
+                annotated_video=annotated_video_path,
+                timestamp=relative_ts,
+            )
+            crops = []
+            if orig_frame is not None and boxes:
+                for i, box in enumerate(boxes):
+                    crop = crop_face_from_frame(orig_frame, box)
+                    if crop is not None:
+                        label = f"t{int(target_ts*1000)}_face_{i:02d}_{box.color}"
+                        crops.append((label, crop))
+                if speaker_box:
+                    s_crop = crop_face_from_frame(orig_frame, speaker_box)
+                    if s_crop is not None:
+                        crops.append((f"t{int(target_ts*1000)}_speaker", s_crop))
+            if clip_path.exists():
+                clip_path.unlink()
+            return (target_ts, turn, boxes, speaker_box, orig_frame, crops)
         except Exception as e:
-            print(f"  [ERROR] Failed to extract faces at t={timestamp:.2f}s: {e}")
-            import traceback
-            traceback.print_exc()
-            continue
+            return (target_ts, turn, None, None, None, [])
+
+    max_workers = min(4, len(timestamps_to_process))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(process_one_segment, (idx, target_ts, turn)): (idx, target_ts)
+            for idx, (target_ts, turn) in enumerate(timestamps_to_process)
+        }
+        for future in as_completed(futures):
+            idx, target_ts = futures[future]
+            try:
+                target_ts_r, turn, boxes, speaker_box, orig_frame, crops = future.result()
+                timestamp_to_faces[target_ts_r] = (boxes, speaker_box, orig_frame)
+                for label, crop in crops:
+                    all_face_crops.append((label, crop))
+                if orig_frame is not None:
+                    frame_path = frames_output_dir / f"t{int(target_ts_r*1000)}_frame.jpg"
+                    cv2.imwrite(str(frame_path), orig_frame)
+                if crops:
+                    ts_ms = int(target_ts_r * 1000)
+                    for label, crop in crops:
+                        stem = label.replace(f"t{ts_ms}_", "") + ".jpg"
+                        save_face_crop(crop, faces_output_dir / f"t{ts_ms}" / stem)
+            except Exception as e:
+                print(f"  [Error] Segment {target_ts}: {e}")
+
+    shutil.rmtree(clips_dir, ignore_errors=True)
     
+    t_end = time.perf_counter()
+    print(f"[Timing] Step 3 (Targeted TalkNet Loop) took: {t_end - t_start:.2f}s")
+
     if not all_face_crops:
-        print("[Warning] No faces extracted from video")
-        # Save empty results
-        final_results_output = intermediate_dir / "final_results.json"
-        with open(final_results_output, "w") as f:
-            json.dump([], f, indent=2)
+        print("[Warning] No faces found in any active segments.")
         return [], intermediate_dir
-    
-    # Step 4: Match faces against database
+
+    # --- Step 4: Face Matching ---
     print(f"\n=== Step 4: Matching {len(all_face_crops)} faces against database ===")
+    t_start = time.perf_counter()
+    
     face_matches = match_faces_to_database(
         face_crops=all_face_crops,
         face_db_dir=FACE_DB_DIR,
         cache_path=FACE_CACHE_PATH,
     )
     
-    # Save face matching results
-    face_matching_output = intermediate_dir / "face_matching.json"
-    face_matching_data = {
-        label: {
-            "face_id": face_id,
-            "distance": float(distance) if distance is not None else None
-        }
-        for label, (face_id, distance) in face_matches.items()
-    }
-    with open(face_matching_output, "w") as f:
-        json.dump(face_matching_data, f, indent=2)
-    print(f"[OK] Face matching results saved to: {face_matching_output}")
+    t_end = time.perf_counter()
+    print(f"[Timing] Step 4 (Face Matching) took: {t_end - t_start:.2f}s")
     
-    # Step 5: Combine results
+    # --- Step 5: Combine Results (person_id from face_id; no speaker_id) ---
     print("\n=== Step 5: Combining results ===")
     results = []
     
@@ -470,7 +363,6 @@ def process_video(video_filename: str) -> Tuple[List[Dict[str, Any]], Path]:
         
         boxes, speaker_box, _ = timestamp_to_faces[timestamp]
         
-        # Find speaker face_id
         speaker_face_id = None
         speaker_distance = None
         
@@ -479,139 +371,56 @@ def process_video(video_filename: str) -> Tuple[List[Dict[str, Any]], Path]:
             if speaker_label in face_matches:
                 speaker_face_id, speaker_distance = face_matches[speaker_label]
         
-        # If speaker face not matched, try matching all green boxes
-        if speaker_face_id is None and speaker_box is not None:
-            for i, box in enumerate(boxes):
+        if speaker_face_id is None:
+            for i, box in enumerate(boxes or []):
                 if box.color == "green":
                     label = f"t{int(timestamp*1000)}_face_{i:02d}_{box.color}"
                     if label in face_matches:
-                        face_id, distance = face_matches[label]
-                        if face_id is not None:
-                            speaker_face_id = face_id
-                            speaker_distance = distance
+                        fid, dist = face_matches[label]
+                        if fid:
+                            speaker_face_id, speaker_distance = fid, dist
                             break
-        
-        # If still no match, try any face at this timestamp
+                            
         if speaker_face_id is None:
-            for i, box in enumerate(boxes):
+            for i, box in enumerate(boxes or []):
                 label = f"t{int(timestamp*1000)}_face_{i:02d}_{box.color}"
                 if label in face_matches:
-                    face_id, distance = face_matches[label]
-                    if face_id is not None:
-                        speaker_face_id = face_id
-                        speaker_distance = distance
+                    fid, dist = face_matches[label]
+                    if fid:
+                        speaker_face_id, speaker_distance = fid, dist
                         break
+
+        person_id = None
+        name = None
+        if speaker_face_id:
+            person = get_person_by_face_id(speaker_face_id)
+            if person:
+                person_id = person.get("person_id")
+                name = person.get("name")
         
-        # Get voiceprint label for this speaker
-        diarization_speaker_id = turn["speaker"]
-        voiceprint_label = speaker_to_voiceprint.get(diarization_speaker_id, "UNKNOWN")
-        
-        result = {
-            "speaker_id": diarization_speaker_id,  # Keep diarization ID for reference
-            "voiceprint_label": voiceprint_label,   # Voiceprint label (person_xxx)
+        results.append({
+            "person_id": person_id,
             "face_id": speaker_face_id,
+            "name": name,
             "text": turn["text"],
             "start": turn["start"],
             "end": turn["end"],
             "timestamp_processed": timestamp,
             "match_distance": speaker_distance,
-        }
-        results.append(result)
-    
-    # Step 6: Update persons.db with speaker_id when we have both face_id and voiceprint_label
-    print("\n=== Step 6: Updating persons.db with speaker IDs ===")
-    updated_count = 0
-    for result in results:
-        face_id = result.get("face_id")
-        voiceprint_label = result.get("voiceprint_label")
-        
-        if face_id and voiceprint_label and voiceprint_label != "UNKNOWN":
-            # Check if person exists with this face_id
-            person = get_person_by_face_id(face_id)
-            if person:
-                # Update speaker_id if not already set or if different
-                if person.get("speaker_id") != voiceprint_label:
-                    update_speaker_id(person["person_id"], voiceprint_label)
-                    updated_count += 1
-                    print(f"[DB] Updated person_id={person['person_id']} (face_id={face_id}) with speaker_id={voiceprint_label}")
-            else:
-                # Check if speaker_id already exists for a different face_id
-                existing_person = get_person_by_speaker_id(voiceprint_label)
-                if existing_person:
-                    print(f"[DB] Warning: speaker_id {voiceprint_label} already assigned to face_id {existing_person['face_id']}, skipping face_id {face_id}")
-                else:
-                    print(f"[DB] Warning: face_id {face_id} not found in persons.db, cannot update speaker_id")
-    
-    if updated_count > 0:
-        print(f"[OK] Updated {updated_count} person(s) in persons.db")
-    else:
-        print(f"[OK] No updates needed in persons.db")
-    
-    # Save final combined results
-    final_results_output = intermediate_dir / "final_results.json"
-    with open(final_results_output, "w") as f:
+        })
+
+    final_output = intermediate_dir / "final_results.json"
+    with open(final_output, "w") as f:
         json.dump(results, f, indent=2)
-    print(f"[OK] Final results saved to: {final_results_output}")
+        
+    pipeline_end_time = time.perf_counter()
+    print(f"\n[Timing] TOTAL process_video execution time: {pipeline_end_time - pipeline_start_time:.2f}s")
     
     return results, intermediate_dir
 
 
-
-async def main_async():
-    if len(sys.argv) != 2:
-        print("Usage: python ingest_pipeline.py <video_filename>")
-        print(f"  Video should be in: {DATA_DIR}")
-        print(f"  Face database should be in: {FACE_DB_DIR}")
-        sys.exit(1)
-    
-    video_filename = sys.argv[1]
-    
-    try:
-        # Run the processing pipeline (synchronous)
-        results, intermediate_dir = process_video(video_filename)
-        
-        # Print results
-        print("\n" + "=" * 80)
-        print("FINAL RESULTS")
-        print("=" * 80)
-        if not results:
-            print("\n[Warning] No results generated. Check if video has audio and speakers.")
-        else:
-            print(f"\n{'Speaker':<12} {'Voiceprint':<15} {'Face ID':<20} {'Text':<40} {'Time':<15}")
-            print("-" * 100)
-            
-            for r in results:
-                speaker_id_str = r["speaker_id"]
-                voiceprint_str = r.get("voiceprint_label", "UNKNOWN")
-                face_id_str = r["face_id"] if r["face_id"] else "UNKNOWN"
-                text_short = (r["text"][:37] + "...") if len(r["text"]) > 40 else r["text"]
-                time_str = f"{r['start']:.1f}-{r['end']:.1f}s"
-                print(f"{speaker_id_str:<12} {voiceprint_str:<15} {face_id_str:<20} {text_short:<40} {time_str:<15}")
-        
-        # Also save to root results.json for convenience
-        output_json = Path(__file__).parent / "results.json"
-        with open(output_json, "w") as f:
-            json.dump(results, f, indent=2)
-        print(f"\n[OK] Results also saved to: {output_json}")
-        print(f"[OK] All intermediate outputs saved to: {intermediate_dir}")
-        
-    except Exception as e:
-        print(f"\n[ERROR] Pipeline failed: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-
-def main():
-    if len(sys.argv) != 2:
-        print("Usage: python ingest_pipeline.py <video_filename>")
-        print(f"  Video should be in: {DATA_DIR}")
-        print(f"  Face database should be in: {FACE_DB_DIR}")
-        sys.exit(1)
-    
-    video_filename = sys.argv[1]
-    process_video(video_filename)
-
-
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) != 2:
+        print("Usage: python process_video.py <video_filename>")
+        sys.exit(1)
+    process_video(sys.argv[1])

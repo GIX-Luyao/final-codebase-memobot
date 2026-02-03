@@ -24,8 +24,9 @@ ENV/
 
 *.mp4
 *.wav
-
-
+*.avi
+*.jpg
+*.pckl
 # IDE
 .vscode/
 .idea/

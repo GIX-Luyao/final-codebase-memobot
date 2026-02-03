@@ -23,8 +23,8 @@ load_dotenv(dotenv_path=MEMOBOT_ROOT / ".env")
 TL_API_KEY = os.getenv("TWELVE_LABS_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 
-# Person DB helpers (stored in memobot/utils/database.py)
-from utils.database import get_person_by_face_id, get_person_by_speaker_id
+# Person DB helpers (person DB has no speaker_id; identify by face_id only)
+from utils.database import get_person_by_face_id
 
 # TwelveLabs client (used by generate_embedding and ingest_data)
 twelvelabs_client = TwelveLabs(api_key=TL_API_KEY)
@@ -146,14 +146,14 @@ def analyze_segment_with_pegasus(
     }
 
     When segment_dialogue is provided (from process_video), the summary MUST
-    include the spoken words and the name of who spoke (face_id or speaker_id).
+    include the spoken words and the name of who spoke (person_id / name / face_id).
 
     Parameters
     ----------
     embedding_option : str or list, optional
         The embedding option type: "visual", "audio", "transcription", or a list
     segment_dialogue : list of dict, optional
-        From process_video: [{speaker_id, face_id, text, start, end}, ...]
+        From process_video: [{person_id, name, face_id, text, start, end}, ...]
         for turns overlapping this segment. Used to include spoken words and
         speaker identity in the summary.
 
@@ -173,7 +173,7 @@ def analyze_segment_with_pegasus(
     if segment_dialogue:
         lines = []
         for t in segment_dialogue:
-            name = t.get("face_id") or t.get("speaker_id") or "Unknown"
+            name = t.get("name") or t.get("person_id") or t.get("face_id") or "Unknown"
             text = (t.get("text") or "").strip()
             if text:
                 lines.append(f"  - {name}: \"{text}\"")
@@ -181,7 +181,7 @@ def analyze_segment_with_pegasus(
             dialogue_block = """
 The following spoken dialogue was identified in this segment (who said what).
 Your summary MUST include this dialogue, attributing each quote to the speaker
-(use the person name/face_id when available, otherwise speaker_id):
+(use the person name when available, otherwise person_id or face_id):
 
 """
             dialogue_block += "\n".join(lines)
@@ -433,13 +433,12 @@ def _turns_in_segment(process_video_results, start_sec: float, end_sec: float):
 
 def _persons_in_turns(process_video_turns):
     """
-    Resolve unique persons for the clip based on:
-    - face_id -> persons.face_id
-    - voiceprint_label (speaker id) -> persons.speaker_id
+    Resolve unique persons for the clip from process_video turns.
+    Person DB has no speaker_id; identity is by face_id -> person_id only.
 
     Returns:
         (person_ids: list[str], persons: list[dict]) where persons are:
-          {person_id, name, face_id, speaker_id}
+          {person_id, name, face_id}
     """
     if not process_video_turns:
         return [], []
@@ -447,25 +446,20 @@ def _persons_in_turns(process_video_turns):
     persons_by_id = {}
 
     for t in process_video_turns:
+        person_id = t.get("person_id")
         face_id = t.get("face_id") or None
-        speaker_id = t.get("voiceprint_label") or t.get("speaker_id") or None
-        if speaker_id == "UNKNOWN":
-            speaker_id = None
-
-        # Prefer face match (more specific), then speaker_id mapping.
-        person = None
-        if face_id:
+        name = t.get("name")
+        if not person_id and face_id:
             person = get_person_by_face_id(face_id)
-        if person is None and speaker_id:
-            person = get_person_by_speaker_id(speaker_id)
+            if person:
+                person_id = person.get("person_id")
+                name = person.get("name")
 
-        if person and person.get("person_id"):
-            pid = person["person_id"]
-            persons_by_id[pid] = {
-                "person_id": pid,
-                "name": person.get("name"),
-                "face_id": person.get("face_id"),
-                "speaker_id": person.get("speaker_id"),
+        if person_id:
+            persons_by_id[person_id] = {
+                "person_id": person_id,
+                "name": name,
+                "face_id": face_id,
             }
 
     persons = list(persons_by_id.values())
@@ -475,9 +469,9 @@ def _persons_in_turns(process_video_turns):
 
 def _dialogue_transcript(process_video_turns) -> str:
     """
-    Build a spoken transcript for the clip, replacing raw speaker ids with person names when possible.
+    Build a spoken transcript for the clip with proper person_id-to-voice matching.
 
-    Input turns come from process_video: [{speaker_id, voiceprint_label, face_id, text, start, end}, ...]
+    Input turns come from process_video: [{person_id, name, face_id, text, start, end}, ...]
     Output is a human-readable transcript like:
         Alice: "..."
         Bob: "..."
@@ -494,22 +488,7 @@ def _dialogue_transcript(process_video_turns) -> str:
         if not text:
             continue
 
-        face_id = t.get("face_id") or None
-        speaker_id = t.get("voiceprint_label") or t.get("speaker_id") or None
-        if speaker_id == "UNKNOWN":
-            speaker_id = None
-
-        person = None
-        if face_id:
-            person = get_person_by_face_id(face_id)
-        if person is None and speaker_id:
-            person = get_person_by_speaker_id(speaker_id)
-
-        name = None
-        if person:
-            name = person.get("name") or None
-
-        label = name or face_id or speaker_id or "Unknown"
+        label = t.get("name") or t.get("person_id") or t.get("face_id") or "Unknown"
         lines.append(f'{label}: "{text}"')
 
     return "\n".join(lines)
@@ -518,17 +497,17 @@ def _dialogue_transcript(process_video_turns) -> str:
 def ingest_data(video_source, index_name="twelve-labs", clip_length=30, process_video_results=None, memobot_group_id=None):
     """
     Generate one embedding and one Pegasus summary per video, then upsert to Pinecone.
-    Input is assumed to be a 30-second clip: one segment (0 to clip_length), one vector.
-
-    When process_video_results is provided (from process_video), the Pegasus summary
-    will include the spoken words and who spoke (face_id or speaker_id) for the clip.
-    memobot_group_id is stored in Pinecone metadata for filtering/tenant isolation.
     """
+    
+    # --- Timing Setup ---
+    overall_start = time.perf_counter()
+    timings = {} # To store durations for the final report
+
     process_video_results = process_video_results or []
     if memobot_group_id is None:
         memobot_group_id = os.getenv("MEMOBOT_GROUP_ID", "tenant_003")
 
-    pc = Pinecone(api_key=PINECONE_API_KEY)
+    pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 
     # Extract video name
     if video_source.startswith(('http://', 'https://')):
@@ -537,12 +516,13 @@ def ingest_data(video_source, index_name="twelve-labs", clip_length=30, process_
         video_name = os.path.splitext(os.path.basename(video_source))[0]
     print(f"Processing video: {video_name}")
 
-    # Connect to / create Pinecone index
+    # --- Step 1: Pinecone Init ---
+    t_start = time.perf_counter()
     if index_name not in pc.list_indexes().names():
         print(f"Creating Pinecone index: {index_name}")
         pc.create_index(
             name=index_name,
-            dimension=512,  # TwelveLabs embedding dimension
+            dimension=512,
             metric="cosine",
             spec=ServerlessSpec(
                 cloud="aws",
@@ -550,28 +530,42 @@ def ingest_data(video_source, index_name="twelve-labs", clip_length=30, process_
             )
         )
     index = pc.Index(index_name)
+    t_end = time.perf_counter()
+    timings["pinecone_init"] = t_end - t_start
+    print(f"[Timing] Pinecone Init/Check took: {timings['pinecone_init']:.2f}s")
 
-    # 1) Generate embeddings with Marengo
+    # --- Step 2: Marengo Embeddings ---
+    print("Generating embeddings (Marengo)...")
+    t_start = time.perf_counter()
     embeddings, task_result = generate_embedding(video_source, clip_length)
+    t_end = time.perf_counter()
+    timings["marengo_embeddings"] = t_end - t_start
+    print(f"[Timing] Marengo Embeddings took: {timings['marengo_embeddings']:.2f}s")
 
-    # 2) Ensure Pegasus index + upload video once
+    # --- Step 3: Pegasus Upload ---
+    print("Uploading to Pegasus...")
+    t_start = time.perf_counter()
     pegasus_index = ensure_pegasus_index(twelvelabs_client, PEGASUS_INDEX_NAME)
     pegasus_video_id = upload_video_to_pegasus(
         twelvelabs_client,
         pegasus_index.id,
         video_source
     )
+    t_end = time.perf_counter()
+    timings["pegasus_upload"] = t_end - t_start
+    print(f"[Timing] Pegasus Upload took: {timings['pegasus_upload']:.2f}s")
 
-    # 3) Common timestamp (ingestion time); you can swap this to "world time" later
+    # --- Step 4: Pegasus Analysis ---
+    print("Running Pegasus Analysis...")
+    t_start = time.perf_counter()
     now_utc = datetime.now(timezone.utc).isoformat()
 
-    # 4) Pegasus summary is intended to be computed ONCE per 30s clip
-    # (not once per embedding modality), then reused for all vectors.
     clip_start_sec = 0.0
     clip_end_sec = float(clip_length)
     clip_dialogue = _turns_in_segment(process_video_results, clip_start_sec, clip_end_sec)
     person_ids, persons = _persons_in_turns(clip_dialogue)
     audio_dialogue = _dialogue_transcript(clip_dialogue)
+    
     summary, importance, talking_to_camera = analyze_segment_with_pegasus(
         twelvelabs_client,
         pegasus_video_id,
@@ -580,21 +574,24 @@ def ingest_data(video_source, index_name="twelve-labs", clip_length=30, process_
         embedding_option="visual",
         segment_dialogue=clip_dialogue,
     )
+    t_end = time.perf_counter()
+    timings["pegasus_analysis"] = t_end - t_start
+    print(f"[Timing] Pegasus Analysis took: {timings['pegasus_analysis']:.2f}s")
 
-    # 5) Prepare vectors with rich metadata (one per embedding option)
+    # --- Step 5: Upsert to Pinecone ---
+    print("Upserting to Pinecone...")
+    t_start = time.perf_counter()
     vectors_to_upsert = []
     for i, emb in enumerate(embeddings):
         start_sec = emb["start_offset_sec"]
         end_sec = emb["end_offset_sec"]
 
-        # Extract embedding option for vector ID (handle both string and list)
         emb_option = emb['embedding_option']
         if isinstance(emb_option, list):
             emb_option_str = emb_option[0] if emb_option else "visual"
         else:
             emb_option_str = emb_option or "visual"
 
-        # Map embedding option to a shorter name for vector ID
         option_map = {
             "transcription": "text",
             "visual": "visual",
@@ -609,23 +606,41 @@ def ingest_data(video_source, index_name="twelve-labs", clip_length=30, process_
             'end_time_sec': end_sec,
             'scope': emb['embedding_scope'],
             'embedding_option': emb['embedding_option'],
-            'timestamp_utc': now_utc,           # when this memory was stored
-            'summary': summary,                 # one-sentence description
-            'importance_score': importance,     # 1–10 (can be None if parsing fails)
-            'talking_to_camera': talking_to_camera,  # 0.0-1.0 (can be None if parsing fails)
+            'timestamp_utc': now_utc,
+            'summary': summary,
+            'importance_score': importance,
+            'talking_to_camera': talking_to_camera,
             'pegasus_video_id': pegasus_video_id,
-            'person_ids': person_ids,           # all recognized person_ids in this 30s clip
-            'audio_dialogue': audio_dialogue,   # transcript with person names when possible
-            'memobot_group_id': memobot_group_id,  # tenant/group for filtering
+            'person_ids': person_ids,
+            'audio_dialogue': audio_dialogue,
+            'memobot_group_id': memobot_group_id,
         }
 
         vectors_to_upsert.append(
             (vector_id, emb['embedding'], metadata)
         )
 
-    # 6) Upsert into Pinecone
     index.upsert(vectors=vectors_to_upsert)
+    t_end = time.perf_counter()
+    timings["pinecone_upsert"] = t_end - t_start
+    print(f"[Timing] Pinecone Upsert took: {timings['pinecone_upsert']:.2f}s")
+    
     print(f"Ingested {len(embeddings)} embeddings for {video_source}")
+    
+    overall_end = time.perf_counter()
+    total_duration = overall_end - overall_start
+
+    # --- Final Report ---
+    print("\n" + "="*40)
+    print(f"VECTOR DB TIMING REPORT ({video_name})")
+    print("="*40)
+    print(f"{'Step':<25} | {'Duration':<10}")
+    print("-" * 40)
+    for step, duration in timings.items():
+        print(f"{step:<25} | {duration:.2f}s")
+    print("-" * 40)
+    print(f"{'TOTAL':<25} | {total_duration:.2f}s")
+    print("="*40 + "\n")
 
     return {
         "video_source": video_source,
@@ -636,7 +651,7 @@ def ingest_data(video_source, index_name="twelve-labs", clip_length=30, process_
         "summary": summary,
         "audio_dialogue": audio_dialogue,
         "person_ids": person_ids,
-        "persons": persons,  # [{person_id,name,face_id,speaker_id}, ...]
+        "persons": persons,
     }
 
 
