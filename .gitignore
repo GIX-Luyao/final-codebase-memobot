@@ -22,6 +22,9 @@ venv/
 ENV/
 .venv
 
+*.mp4
+*.wav
+
 
 # IDE
 .vscode/
