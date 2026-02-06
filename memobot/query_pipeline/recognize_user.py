@@ -56,9 +56,9 @@ def recognize_user(image_path=None, verbose=True):
     """
     path = Path(image_path) if image_path else IMAGE_PATH
     if not path.exists():
-        print(f"[Error] Image not found: {path}")
-        print(f"[Info] Please place an image in the query_pipeline directory or pass a valid path")
-        sys.exit(1)
+        if verbose:
+            print(f"[Error] Image not found: {path}")
+        return None
 
     if verbose:
         print(f"[Info] Loading image: {path}")
@@ -70,10 +70,11 @@ def recognize_user(image_path=None, verbose=True):
         print(f"[Info] Loading face database from: {FACE_DATABASE_DIR}")
 
     if not FACE_DATABASE_DIR.exists():
-        print(f"[Error] Face database directory not found: {FACE_DATABASE_DIR}")
-        sys.exit(1)
+        if verbose:
+            print(f"[Error] Face database directory not found: {FACE_DATABASE_DIR}")
+        return None
 
-    # Build/load DB embeddings cache
+    # Build/load DB embeddings cache (allow empty db for library callers that will register unknown users)
     try:
         db_map = match_face.ensure_db_cache(
             db_dir=FACE_DATABASE_DIR,
@@ -85,20 +86,33 @@ def recognize_user(image_path=None, verbose=True):
             distance_metric=FACE_DISTANCE_METRIC,
             rebuild=False,
         )
-
-        if not db_map:
-            print(f"[Error] No valid face embeddings in database")
-            print(f"[Info] Try running onboarding/create_new_person.py first")
-            sys.exit(1)
-
-        if verbose:
-            print(f"[Info] Face database loaded: {len(db_map)} person(s)")
-
     except Exception as e:
-        print(f"[Error] Failed to load face database: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        # Empty face_database or load error: if query has a face, caller can register
+        if verbose:
+            print(f"[Info] Face database not ready ({e}); checking if query image has a face")
+        q_emb = match_face.get_embedding(
+            img_path=path,
+            model_name=FACE_MODEL,
+            detector_backend=FACE_DETECTOR,
+            enforce_detection=FACE_ENFORCE_DETECTION,
+            align=FACE_ALIGN,
+        )
+        return {"unknown": True} if q_emb is not None else None
+
+    if not db_map:
+        if verbose:
+            print(f"[Info] No face embeddings in database; checking if query image has a face")
+        q_emb = match_face.get_embedding(
+            img_path=path,
+            model_name=FACE_MODEL,
+            detector_backend=FACE_DETECTOR,
+            enforce_detection=FACE_ENFORCE_DETECTION,
+            align=FACE_ALIGN,
+        )
+        return {"unknown": True} if q_emb is not None else None
+
+    if verbose:
+        print(f"[Info] Face database loaded: {len(db_map)} person(s)")
 
     # Match the query image to the database
     if verbose:
@@ -116,18 +130,28 @@ def recognize_user(image_path=None, verbose=True):
         )
 
         if face_id is None:
-            print(f"[Error] No face detected in image or no match found")
-            sys.exit(1)
+            # Face may be detected but not matched to anyone; allow caller to register as new user
+            q_emb = match_face.get_embedding(
+                img_path=path,
+                model_name=FACE_MODEL,
+                detector_backend=FACE_DETECTOR,
+                enforce_detection=FACE_ENFORCE_DETECTION,
+                align=FACE_ALIGN,
+            )
+            if verbose and q_emb is None:
+                print(f"[Error] No face detected in image")
+            return {"unknown": True} if q_emb is not None else None
 
         if verbose:
             print(f"[Match] Found match: face_id={face_id}, distance={distance:.4f}")
             print(f"[Match] Matched database image: {db_image}")
 
     except Exception as e:
-        print(f"[Error] Face matching failed: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        if verbose:
+            print(f"[Error] Face matching failed: {e}")
+            import traceback
+            traceback.print_exc()
+        return None
 
     # Query the database for person information
     if verbose:
@@ -136,9 +160,9 @@ def recognize_user(image_path=None, verbose=True):
         person = get_person_by_face_id(face_id)
 
         if person is None:
-            print(f"[Error] Person not found in database for face_id: {face_id}")
-            print(f"[Info] The face was matched but no database record exists")
-            sys.exit(1)
+            if verbose:
+                print(f"[Error] Person not found in database for face_id: {face_id}")
+            return None
 
         # Output the person record (only when verbose)
         if verbose:
@@ -155,15 +179,18 @@ def recognize_user(image_path=None, verbose=True):
         return person
 
     except Exception as e:
-        print(f"[Error] Database query failed: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        if verbose:
+            print(f"[Error] Database query failed: {e}")
+            import traceback
+            traceback.print_exc()
+        return None
 
 
 if __name__ == "__main__":
     try:
-        recognize_user()
+        r = recognize_user()
+        if r is None or (isinstance(r, dict) and r.get("unknown")):
+            sys.exit(1)
     except KeyboardInterrupt:
         print("\n[Interrupted] Process cancelled by user")
         sys.exit(1)
