@@ -306,7 +306,7 @@ See main project LICENSE file.
 
 COMMAND TO RUN SERVER:
 Run with Ingest:
-python memobot/robot/mac_master_v5.py --realtime --ingest
+python memobot/robot/mac_master_v7.py --realtime --ingest
 
 Without Ingest:
 python memobot/robot/mac_master_v5.py
