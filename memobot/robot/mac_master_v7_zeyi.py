@@ -75,6 +75,8 @@ NETWORK_LATENCY_DELAY = 0.25
 VAD_CHUNK_SAMPLES = 512   # 32ms at 16kHz (Silero recommends 30ms+)
 VAD_SPEECH_THRESHOLD = 0.5
 VAD_RECOGNITION_COOLDOWN = 2.0  # seconds between recognition requests on speech start
+# Hold user audio from API for this long after speech start so speaker can be updated before the turn is processed
+USER_AUDIO_HOLD_AFTER_SPEECH_START = 0.5
 
 # Set in main() from --ingest: when True, run ingest pipeline after each 30s clip
 INGEST_MEMORIES = False
@@ -300,6 +302,10 @@ _current_speaker = None  # {"person_id": ..., "name": ...} or None
 _last_speaker_sent_to_api = None  # name last sent via session.update (or None)
 _last_recognition_request_time = 0.0
 _last_recognition_request_lock = threading.Lock()
+# User audio hold: buffer mic for a short window after speech start so recognition can update speaker before API hears the turn
+_user_audio_hold_until = 0.0
+_user_audio_buffer = bytearray()
+_user_audio_buffer_lock = threading.Lock()
 
 def _int16_to_float32(audio_int16):
     """Convert int16 audio to float32 for Silero VAD (-1..1)."""
@@ -404,7 +410,7 @@ def recognize_user_from_frame(frame):
 
 def patched_receive_audio_from_robot():
     """Reads audio from socket in a loop; feeds recorder, runs VAD on user mic, requests recognition on speech start."""
-    global _last_recognition_request_time
+    global _last_recognition_request_time, _user_audio_hold_until
 
     print(f"[Audio RX] Listening on {original_server.PORT_AUDIO_RX}...")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -437,10 +443,19 @@ def patched_receive_audio_from_robot():
                 audio_np = np.frombuffer(data, dtype=np.int16)
                 _audio_ring_buffer.extend(audio_np)
 
-            # Feed realtime agent (user mic -> API)
+            # Feed realtime agent (user mic -> API). Hold user audio briefly after speech start so speaker can be updated first.
             if original_server.use_realtime and original_server.agent_instance:
                 if not original_server.agent_instance.is_robot_speaking():
-                    original_server.agent_instance.ingest_robot_audio(data)
+                    with _user_audio_buffer_lock:
+                        now = time.time()
+                        if now < _user_audio_hold_until:
+                            _user_audio_buffer.extend(data)
+                        else:
+                            if _user_audio_buffer:
+                                flush = bytes(_user_audio_buffer)
+                                _user_audio_buffer.clear()
+                                original_server.agent_instance.ingest_robot_audio(flush)
+                            original_server.agent_instance.ingest_robot_audio(data)
 
             # VAD: run on user mic only; on speech start request face recognition
             if vad_model is not None:
@@ -460,6 +475,8 @@ def patched_receive_audio_from_robot():
                             if (time.time() - _last_recognition_request_time) >= VAD_RECOGNITION_COOLDOWN:
                                 _recognition_requested.set()
                                 _last_recognition_request_time = time.time()
+                                with _user_audio_buffer_lock:
+                                    _user_audio_hold_until = time.time() + USER_AUDIO_HOLD_AFTER_SPEECH_START
                     in_speech_prev = in_speech
     except Exception as e:
         print(f"[Audio RX] Error: {e}")
