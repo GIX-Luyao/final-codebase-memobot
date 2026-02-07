@@ -309,7 +309,11 @@ def _int16_to_float32(audio_int16):
 # --- RECOGNITION ---
 def register_unknown_user(frame):
     """Assign a new Person ID, add to persons.db, then save face image so they are recognized next time.
-    persons.db is always updated whenever a new face identity is added."""
+    persons.db is always updated whenever a new face identity is added.
+    Does nothing and returns None if the frame contains no detectable face (avoids saving empty/bad crops)."""
+    if not detect_faces_fast(frame):
+        print("[Recognition] No face detected in frame; not saving to face_database.")
+        return None
     face_id = str(uuid.uuid4())
     name = f"Guest_{face_id[:8]}"
     init_database(verbose=False)
