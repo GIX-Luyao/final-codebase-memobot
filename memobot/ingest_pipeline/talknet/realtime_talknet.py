@@ -17,6 +17,8 @@ class RealtimeTalkNet:
         # Optimize model for inference
         if device == 'cuda':
             self.s.cuda()
+        elif device == 'mps':
+            self.s.to('mps')
         
     def preprocess_audio(self, audio_int16_chunk):
         """
