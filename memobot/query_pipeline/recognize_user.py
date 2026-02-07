@@ -160,9 +160,10 @@ def recognize_user(image_path=None, verbose=True):
         person = get_person_by_face_id(face_id)
 
         if person is None:
+            # Matched an image in face_database that has no persons.db row (e.g. orphan/crop file). Treat as unknown so caller can register.
             if verbose:
                 print(f"[Error] Person not found in database for face_id: {face_id}")
-            return None
+            return {"unknown": True}
 
         # Output the person record (only when verbose)
         if verbose:
