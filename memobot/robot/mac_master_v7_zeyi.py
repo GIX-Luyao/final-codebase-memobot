@@ -62,9 +62,13 @@ DATA_DIR = PROJECT_ROOT / "ingest_pipeline" / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 RECOGNIZED_USER_FRAMES_DIR = ROBOT_DIR / "recognized_user_frames"
 RECOGNIZED_USER_FRAMES_DIR.mkdir(parents=True, exist_ok=True)
+TALKNET_CROPS_DIR = ROBOT_DIR / "talknet_crops"  # Crops for debugging only; do NOT put in face_database
+TALKNET_CROPS_DIR.mkdir(parents=True, exist_ok=True)
 FACE_DATABASE_DIR = REPO_ROOT / "face_database"
 
-MAX_RECOGNITION_DISTANCE = 0.5
+MAX_RECOGNITION_DISTANCE = 0.5   # Below this: confident same person
+# Above this: best match is too far to be the same person → treat as new user and register
+MAX_DISTANCE_TO_ACCEPT_AS_SAME_PERSON = 0.65
 NETWORK_LATENCY_DELAY = 0.25
 
 # VAD-driven recognition
@@ -80,7 +84,7 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(PROJECT_ROOT / "query_pipeline") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "query_pipeline"))
 
-from utils.database import init_database, add_person, get_person_by_face_id
+from utils.database import init_database, add_person, get_person_by_face_id, delete_person_by_face_id
 from utils.main import update_face_embedding_cache
 
 # --- RECORDER ENGINE ---
@@ -304,22 +308,23 @@ def _int16_to_float32(audio_int16):
 
 # --- RECOGNITION ---
 def register_unknown_user(frame):
-    """Assign a new Person ID and add this face to the face_database so they are recognized next time."""
+    """Assign a new Person ID, add to persons.db, then save face image so they are recognized next time.
+    persons.db is always updated whenever a new face identity is added."""
     face_id = str(uuid.uuid4())
     name = f"Guest_{face_id[:8]}"
+    init_database(verbose=False)
+    try:
+        add_person(face_id=face_id, name=name)
+    except Exception as e:
+        print(f"[Recognition] Failed to add person to persons.db: {e}")
+        return None
     FACE_DATABASE_DIR.mkdir(parents=True, exist_ok=True)
     dest_path = FACE_DATABASE_DIR / f"{face_id}.png"
     try:
         cv2.imwrite(str(dest_path), frame)
     except Exception as e:
         print(f"[Recognition] Failed to save face image: {e}")
-        return None
-    init_database(verbose=False)
-    try:
-        add_person(face_id=face_id, name=name)
-    except Exception as e:
-        print(f"[Recognition] Failed to add person to DB: {e}")
-        dest_path.unlink(missing_ok=True)
+        delete_person_by_face_id(face_id)
         return None
     if not update_face_embedding_cache(face_id, dest_path):
         print(f"[Recognition] Warning: could not update face embedding cache for {face_id}")
@@ -369,16 +374,21 @@ def recognize_user_from_frame(frame):
         tmp_path.unlink(missing_ok=True)
         if result is None:
             return None
-        # Face detected but not in database: caller should register this user
+        # Face detected but not in database: caller may register (only when confident it's new)
         if isinstance(result, dict) and result.get("unknown"):
             return {"unknown": True}
         person = result
         name = person.get("name", "Unknown").replace(" ", "_")
         dist = person.get("distance", 1.0)
         if dist > MAX_RECOGNITION_DISTANCE:
-            print(f"[Recognition] Low confidence ({dist:.4f}). Registering as new user.")
+            if dist > MAX_DISTANCE_TO_ACCEPT_AS_SAME_PERSON:
+                # Best match is too far: likely a different person (new user). Register.
+                print(f"[Recognition] Distance {dist:.4f} > {MAX_DISTANCE_TO_ACCEPT_AS_SAME_PERSON}; treating as new user.")
+                return {"unknown": True}
+            # In between: uncertain (same person with bad crop). Use as current speaker, do NOT register.
+            print(f"[Recognition] Low confidence ({dist:.4f}). Using as current speaker, not registering as new user.")
             cv2.imwrite(str(RECOGNIZED_USER_FRAMES_DIR / f"{ts}_{name}_low_conf.png"), frame)
-            return {"unknown": True}
+            return person
         cv2.imwrite(str(RECOGNIZED_USER_FRAMES_DIR / f"{ts}_{name}.png"), frame)
         return person
     except Exception as e:
@@ -562,11 +572,11 @@ async def main():
                             
                             active_speaker_crop = frame_copy[cy1:cy2, cx1:cx2]
                             
-                            # Save TalkNet crop to face_database as requested
+                            # Save TalkNet crop for debugging only (not in face_database; that is for enrolled identities only)
                             if active_speaker_crop.size > 0:
                                 try:
                                     ts_crop = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                                    crop_output_path = FACE_DATABASE_DIR / f"talknet_crop_{ts_crop}.png"
+                                    crop_output_path = TALKNET_CROPS_DIR / f"talknet_crop_{ts_crop}.png"
                                     cv2.imwrite(str(crop_output_path), active_speaker_crop)
                                     print(f"[TalkNet] Saved crop to {crop_output_path}")
                                 except Exception as e:
@@ -617,7 +627,8 @@ async def main():
             return
 
         if isinstance(result, dict) and result.get("unknown"):
-            # Register using the Target Image (Active Speaker Crop)
+            # Only register when recognizer found no match in DB (truly new person). Low-confidence
+            # matches are handled above by returning the person without {"unknown": True}.
             person = register_unknown_user(target_image)
             with _current_speaker_lock:
                 _current_speaker = (
