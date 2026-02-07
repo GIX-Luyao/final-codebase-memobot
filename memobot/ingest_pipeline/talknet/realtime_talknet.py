@@ -144,15 +144,36 @@ class RealtimeTalkNet:
                 # Let's assume out[0][1] is the "speaking" score.
                 
                 # Check output shape of your specific TalkNet model version
-                # Usually indices: 1 = speaking, 0 = silent
-                score = out[0][0][1].item() if out.shape[-1] > 1 else out[0][0].item()
+                if out is None or out.numel() == 0:
+                    continue
+
+                # Handle different output shapes safely
+                # Case 1: (Batch, Time, Classes) - Take mean over time for class 1
+                if len(out.shape) == 3 and out.shape[-1] >= 2:
+                    # avg_score = out[0, :, 1].mean().item()
+                    # Or max score? Active bits might be short. 
+                    # Let's take the max of the active class probability
+                    score = torch.max(out[0, :, 1]).item()
+                
+                # Case 2: (Batch, Classes) - Pooled output
+                elif len(out.shape) == 2 and out.shape[-1] >= 2:
+                    score = out[0][1].item()
+                    
+                # Case 3: (Batch, Time, 1) or (Batch, 1) - Binary score
+                else: 
+                    # Flatten and take max
+                    score = torch.max(out).item()
+                
+                # Debug print to help tune
+                if score > 0.0:
+                     print(f"[TalkNet] Face {bbox} Score: {score:.4f} Shape: {out.shape}")
                 
                 if score > best_score:
                     best_score = score
                     best_bbox = bbox
 
         # Threshold (tune as needed, 0.0 or 0.5 depending on loss type)
-        if best_score > 0.5: 
+        if best_score > 0.1: # Try low positive threshold for logits
             return best_bbox
             
         return None
