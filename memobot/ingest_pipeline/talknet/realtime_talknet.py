@@ -172,8 +172,7 @@ class RealtimeTalkNet:
                     best_score = score
                     best_bbox = bbox
 
-        # Threshold (tune as needed, 0.0 or 0.5 depending on loss type)
-        if best_score > 0.1: # Try low positive threshold for logits
-            return best_bbox
-            
-        return None
+        # Return the best candidate regardless of threshold (fallback to most likely speaker)
+        # Caller can decide if score is too low, or we assume VAD ensured speech exists.
+        return best_bbox
+

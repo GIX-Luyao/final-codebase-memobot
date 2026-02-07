@@ -582,8 +582,14 @@ async def main():
         t_talknet = time.time()
         
         # 2. DeepFace identification
-        # If we have a crop, recognize that. Else fallback to full frame.
-        target_image = active_speaker_crop if active_speaker_crop is not None else frame_copy
+        # If we have a valid crop, recognize that. Else fallback to full frame.
+        target_image = frame_copy
+        if active_speaker_crop is not None and active_speaker_crop.size > 0:
+            target_image = active_speaker_crop
+        elif TALKNET_AVAILABLE:
+            # If TalkNet was available but failed to produce a valid crop, 
+            # we might want to be careful. But fallback is full frame.
+            pass
         
         # Note: recognize_user_from_frame expects a full frame usually regarding logic, 
         # but recognize_user library works on image files. 
