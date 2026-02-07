@@ -561,6 +561,17 @@ async def main():
                             cy2 = min(h, y2 + margin_y)
                             
                             active_speaker_crop = frame_copy[cy1:cy2, cx1:cx2]
+                            
+                            # Save TalkNet crop to face_database as requested
+                            if active_speaker_crop.size > 0:
+                                try:
+                                    ts_crop = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                                    crop_output_path = FACE_DATABASE_DIR / f"talknet_crop_{ts_crop}.png"
+                                    cv2.imwrite(str(crop_output_path), active_speaker_crop)
+                                    print(f"[TalkNet] Saved crop to {crop_output_path}")
+                                except Exception as e:
+                                    print(f"[TalkNet] Failed to save crop: {e}")
+
                             print(f"[TalkNet] Active speaker found at {active_bbox}. Cropped for ID.")
                             used_optimized_pipeline = True
                         else:
