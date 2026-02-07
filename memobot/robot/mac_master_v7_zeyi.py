@@ -11,6 +11,7 @@ import uuid
 import numpy as np
 import wave
 import subprocess
+import collections
 from pathlib import Path
 from datetime import datetime
 
@@ -22,6 +23,33 @@ try:
 except ImportError:
     torch = None
     SILERO_VAD_AVAILABLE = False
+
+# TalkNet for active speaker detection
+try:
+    # Need to add talknet directory to path
+    import sys
+    talknet_dir = str(Path(__file__).resolve().parent.parent / "ingest_pipeline" / "talknet")
+    if talknet_dir not in sys.path:
+        sys.path.insert(0, talknet_dir)
+    from realtime_talknet import RealtimeTalkNet
+    TALKNET_MODEL_PATH = Path(talknet_dir) / "pretrain_TalkSet.model"
+    # Select device- check if MPS or CUDA available
+    device = 'cpu'
+    if torch and torch.cuda.is_available():
+        device = 'cuda'
+    # MPS support for Mac requires pytorch specific version, stick to catch-all
+    elif torch and torch.backends.mps.is_available():
+        device = 'mps'
+        
+    talknet_engine = RealtimeTalkNet(str(TALKNET_MODEL_PATH), device=device)
+    TALKNET_AVAILABLE = True
+    print(f"[TalkNet] Loaded successfully on {device}")
+except ImportError as e:
+    print(f"[TalkNet] Not available: {e}")
+    TALKNET_AVAILABLE = False
+except Exception as e:
+    print(f"[TalkNet] Failed to load: {e}")
+    TALKNET_AVAILABLE = False
 
 # --- IMPORT ORIGINAL SERVER LOGIC ---
 import memobot.robot.mac_master_v3 as original_server
@@ -257,6 +285,9 @@ recorder = ClipRecorder()
 # --- VAD-driven recognition shared state ---
 _latest_frame_lock = threading.Lock()
 _latest_frame = None  # numpy array copy of most recent video frame
+# TalkNet: Rolling buffers (1 second window) - 25 FPS video, 16kHz audio
+_video_ring_buffer = collections.deque(maxlen=25)
+_audio_ring_buffer = collections.deque(maxlen=16000)
 _recognition_requested = threading.Event()
 # Serialize face recognition: TensorFlow/Metal crashes if two recognitions run concurrently
 _recognition_lock = threading.Lock()
@@ -296,6 +327,36 @@ def register_unknown_user(frame):
     if person:
         print(f"[Recognition] Registered new user: person_id={person['person_id']}, name={name}")
     return person
+
+
+def detect_faces_fast(frame):
+    """
+    Fast face detection using OpenCV Haar Cascade.
+    Returns list of dicts: [{'x':x, 'y':y, 'w':w, 'h':h}, ...]
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    
+    # Load cascade (try standard paths)
+    cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+    face_cascade = cv2.CascadeClassifier(cascade_path)
+    
+    if face_cascade.empty():
+        print("[Detection] Error: Could not load face cascade")
+        return []
+        
+    faces = face_cascade.detectMultiScale(
+        gray,
+        scaleFactor=1.1,
+        minNeighbors=5,
+        minSize=(30, 30),
+        flags=cv2.CASCADE_SCALE_IMAGE
+    )
+    
+    results = []
+    for (x, y, w, h) in faces:
+        results.append({'x': x, 'y': y, 'w': w, 'h': h})
+    
+    return results
 
 
 def recognize_user_from_frame(frame):
@@ -356,6 +417,11 @@ def patched_receive_audio_from_robot():
                 break
 
             recorder.add_audio(data)
+            
+            # TalkNet: Update audio ring buffer
+            if TALKNET_AVAILABLE:
+                audio_np = np.frombuffer(data, dtype=np.int16)
+                _audio_ring_buffer.extend(audio_np)
 
             # Feed realtime agent (user mic -> API)
             if original_server.use_realtime and original_server.agent_instance:
@@ -454,15 +520,88 @@ async def main():
             asyncio.create_task(original_server.agent_instance.run())
 
     def _run_recognition_on_frame(frame_copy):
-        """Run face recognition in a thread and update current speaker. Register unknown users."""
+        """Run face recognition pipeline: VAD -> TalkNet -> DeepFace."""
         global _current_speaker
-        result = recognize_user_from_frame(frame_copy)
+        t_start = time.time()
+        
+        # 1. TalkNet Active Speaker Detection
+        active_speaker_crop = None
+        used_optimized_pipeline = False
+        
+        if TALKNET_AVAILABLE:
+            with _latest_frame_lock:
+                video_history = list(_video_ring_buffer)
+                audio_history = np.array(_audio_ring_buffer)
+            
+            # Only run if we have enough history (~0.8s+)
+            if len(video_history) >= 20 and len(audio_history) > 12000:
+                try:
+                    faces = detect_faces_fast(frame_copy)
+                    if faces:
+                        # Convert to [x1, y1, x2, y2]
+                        formatted_faces = []
+                        for f in faces:
+                            formatted_faces.append([f['x'], f['y'], f['x']+f['w'], f['y']+f['h']])
+                        
+                        active_bbox = talknet_engine.predict_active_speaker(
+                            video_history,
+                            audio_history,
+                            formatted_faces
+                        )
+                        
+                        if active_bbox:
+                            x1, y1, x2, y2 = active_bbox
+                            # Add some margin for DeepFace/Alignment
+                            h, w, _ = frame_copy.shape
+                            margin_x = int((x2-x1) * 0.2)
+                            margin_y = int((y2-y1) * 0.2)
+                            cx1 = max(0, x1 - margin_x)
+                            cy1 = max(0, y1 - margin_y)
+                            cx2 = min(w, x2 + margin_x)
+                            cy2 = min(h, y2 + margin_y)
+                            
+                            active_speaker_crop = frame_copy[cy1:cy2, cx1:cx2]
+                            print(f"[TalkNet] Active speaker found at {active_bbox}. Cropped for ID.")
+                            used_optimized_pipeline = True
+                        else:
+                            print("[TalkNet] Faces detected but no active speaker (lips not moving?).")
+                except Exception as e:
+                    print(f"[TalkNet] Error in pipeline: {e}")
+        
+        t_talknet = time.time()
+        
+        # 2. DeepFace identification
+        # If we have a crop, recognize that. Else fallback to full frame.
+        target_image = active_speaker_crop if active_speaker_crop is not None else frame_copy
+        
+        # Note: recognize_user_from_frame expects a full frame usually regarding logic, 
+        # but recognize_user library works on image files. 
+        # If we pass a crop, it should work better as there is only one face.
+        
+        result = recognize_user_from_frame(target_image)
+        
+        t_end = time.time()
+        total_time = t_end - t_start
+        talknet_time = t_talknet - t_start
+        deepface_time = t_end - t_talknet
+        print(f"[Latency] Total: {total_time:.3f}s (TalkNet: {talknet_time:.3f}s, Recognition: {deepface_time:.3f}s)")
+        
         if result is None:
-            with _current_speaker_lock:
-                _current_speaker = None
+            # If we used crop and failed, maybe try full frame as backup? 
+            # For now, just clear speaker.
+            if used_optimized_pipeline:
+                 pass # Keep existing speaker or clear?
+            
+            # If nobody recognized in full frame either (or crop failed)
+            # Only clear if we were doing a full scan or if we are sure nobody is there
+            # For now, simplistic approach:
+            # with _current_speaker_lock:
+            #    _current_speaker = None
             return
+
         if isinstance(result, dict) and result.get("unknown"):
-            person = register_unknown_user(frame_copy)
+            # Register using the Target Image (Active Speaker Crop)
+            person = register_unknown_user(target_image)
             with _current_speaker_lock:
                 _current_speaker = (
                     {"person_id": person["person_id"], "name": person["name"]}
@@ -470,6 +609,7 @@ async def main():
                     else None
                 )
             return
+            
         person = result
         with _current_speaker_lock:
             _current_speaker = {"person_id": person.get("person_id"), "name": person.get("name")}
@@ -527,6 +667,8 @@ async def main():
             if frame is not None:
                 with _latest_frame_lock:
                     _latest_frame = frame.copy()
+                    if TALKNET_AVAILABLE:
+                        _video_ring_buffer.append(frame.copy())
                 recorder.add_video(frame)
                 cv2.imshow("Server View", frame)
 
