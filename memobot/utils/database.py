@@ -144,6 +144,48 @@ def get_all_persons() -> List[Dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def update_person_name_by_face_id(face_id: str, name: str) -> bool:
+    """
+    Update the name for a person by their face_id.
+
+    Args:
+        face_id: The face identifier (UUID) to update.
+        name: The new name.
+
+    Returns:
+        True if a row was updated, False if no matching row existed.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE persons SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE face_id = ?",
+        (name, face_id),
+    )
+    updated = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return updated > 0
+
+
+def delete_person_by_face_id(face_id: str) -> bool:
+    """
+    Delete a person by their face_id.
+
+    Args:
+        face_id: The face identifier (UUID) to delete.
+
+    Returns:
+        True if a row was deleted, False if no matching row existed.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM persons WHERE face_id = ?", (face_id,))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted > 0
+
+
 if __name__ == "__main__":
     # Initialize database when run directly
     init_database()
