@@ -19,9 +19,15 @@ Usage:
 import os
 import argparse
 import pickle
+import re
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+# Only enrolled identities: face_database images named <uuid>.png (so we ignore talknet_crop_* etc.)
+UUID_STEM_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+)
 
 import numpy as np
 import pandas as pd
@@ -185,9 +191,13 @@ def ensure_db_cache(
     distance_metric: str,
     rebuild: bool,
 ) -> Dict[str, Dict[str, np.ndarray]]:
-    db_images = list_images(db_dir)
+    all_images = list_images(db_dir)
+    # Only use enrolled identities: filename stem must be a UUID (ignore talknet_crop_* etc.)
+    db_images = [p for p in all_images if UUID_STEM_PATTERN.match(p.stem)]
     if not db_images:
-        raise RuntimeError(f"No images found in db_dir: {db_dir}")
+        raise RuntimeError(
+            f"No enrolled face images (UUID-named) found in db_dir: {db_dir}"
+        )
 
     if cache_path.exists() and not rebuild:
         cached = load_db_cache(cache_path)
@@ -199,8 +209,9 @@ def ensure_db_cache(
             and cached.get("align") == align
             and cached.get("enforce_detection") == enforce_detection
         ):
-            return cached["db_map"]
-
+            # Return only UUID-keyed entries (ignore any crop/orphan entries in cache)
+            db_map = cached["db_map"]
+            return {k: v for k, v in db_map.items() if UUID_STEM_PATTERN.match(k)}
     return build_db_cache(
         db_images=db_images,
         cache_path=cache_path,
