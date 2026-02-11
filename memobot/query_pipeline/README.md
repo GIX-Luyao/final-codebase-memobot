@@ -50,7 +50,7 @@ If the face isn’t found or the DB has no match, `main.py` exits with an error 
 | **`main.py`** | Entry point: load image → `recognize_user()` → `run_realtime_mode(user_name=...)`. |
 | **`recognize_user.py`** | Face matching via `deepface/match_face.py`, then lookup in `onboarding` DB by `face_id`. Returns a person dict (e.g. `name`, `person_id`). |
 | **`robo_client.py`** | Realtime voice agent (OpenAI Realtime API). Uses `user_name` in the system prompt and calls memory retrieval when the user asks about the past. |
-| **`query.py`** | Query layer for video “memories” (TwelveLabs + Pinecone): embed text, search, then re-rank with relevance/importance/time decay. Used by the ingest/query pipeline; the robot client may call into it or a similar backend. |
+| **`query.py`** | Query layer for video “memories” (Google Vertex AI + Pinecone): embed text, search, then re-rank with relevance/importance/time decay. Used by the ingest/query pipeline; the robot client may call into it or a similar backend. |
 | **`mock_memory_storage.py`** | In-memory mock memory store for testing without a real memory backend. |
 
 ## Optional: Run the robot client only (no face recognition)

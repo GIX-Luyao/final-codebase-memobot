@@ -1,8 +1,8 @@
 """
 query.py
 
-Query video "memories" stored in Pinecone using TwelveLabs embeddings,
-then re-rank results with an AI-Town style score:
+Query video "memories" stored in Pinecone using Google Vertex AI multimodal
+embeddings (same model as ingest for semantic search), then re-rank results:
 
 FinalScore = alpha * relevance + beta * importance + gamma * time_decay
 """
@@ -13,51 +13,45 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 from dotenv import load_dotenv
-from twelvelabs import TwelveLabs
 from pinecone import Pinecone
 
 # --------- ENV & CLIENTS ---------
 
 load_dotenv()
-TL_API_KEY = os.getenv("TWELVE_LABS_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+VERTEX_AI_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("VERTEX_AI_PROJECT")
+VERTEX_AI_LOCATION = os.getenv("VERTEX_AI_LOCATION", "us-central1")
+EMBEDDING_DIMENSION = 512  # must match ingest pipeline
 
-if not TL_API_KEY:
-    raise RuntimeError("TWELVE_LABS_API_KEY not set in environment")
+if not VERTEX_AI_PROJECT:
+    raise RuntimeError("GOOGLE_CLOUD_PROJECT or VERTEX_AI_PROJECT not set in environment")
 if not PINECONE_API_KEY:
     raise RuntimeError("PINECONE_API_KEY not set in environment")
 
-twelvelabs_client = TwelveLabs(api_key=TL_API_KEY)
 pc = Pinecone(api_key=PINECONE_API_KEY)
 
 
-# --------- EMBEDDING FOR TEXT QUERY (USING TWELVELABS) ---------
+# --------- EMBEDDING FOR TEXT QUERY (VERTEX AI MULTIMODAL, TEXT-ONLY) ---------
 
 def get_text_embedding(text_query: str) -> List[float]:
     """
-    Convert a text question into an embedding using TwelveLabs Embed API.
-
-    Matches the pattern:
-
-        res = client.embed.create(model_name="marengo3.0", text="...")
-        res.text_embedding.segments[0].float_
-
-    Returns: a single vector (list of floats) to query Pinecone.
+    Convert a text question into an embedding using Vertex AI multimodal model
+    (text-only; same semantic space as video embeddings at ingest).
+    Returns: a single 512-d vector (list of floats) to query Pinecone.
     """
-    res = twelvelabs_client.embed.create(
-        model_name="marengo3.0",
-        text=text_query,
+    import vertexai
+    from vertexai.vision_models import MultiModalEmbeddingModel
+
+    vertexai.init(project=VERTEX_AI_PROJECT, location=VERTEX_AI_LOCATION)
+    model = MultiModalEmbeddingModel.from_pretrained("multimodalembedding@001")
+    embeddings = model.get_embeddings(
+        contextual_text=text_query,
+        dimension=EMBEDDING_DIMENSION,
     )
-
-    if res.text_embedding is None or res.text_embedding.segments is None:
-        raise RuntimeError("No text_embedding segments returned from TwelveLabs")
-
-    segments = res.text_embedding.segments
-    if len(segments) == 0:
-        raise RuntimeError("Empty text_embedding.segments returned from TwelveLabs")
-
-    # Use the first segment as the query embedding
-    return segments[0].float_
+    if embeddings.text_embedding is None:
+        raise RuntimeError("No text_embedding returned from Vertex AI multimodal model")
+    vec = embeddings.text_embedding
+    return list(vec) if hasattr(vec, "__iter__") and not isinstance(vec, str) else vec
 
 
 # --------- TIME DECAY & FINAL SCORE ---------
@@ -113,7 +107,7 @@ def normalize_scores(values: List[float]) -> List[float]:
 
 def retrieve_and_rank(
     question: str,
-    index_name: str = "twelve-labs",
+    index_name: str = "memobot-memories",
     top_k: int = 10,
     alpha: float = 0.5,   # relevance weight
     beta: float = 0.3,    # importance weight
@@ -121,7 +115,7 @@ def retrieve_and_rank(
     person_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
-    1) Embed the question using TwelveLabs.
+    1) Embed the question using Vertex AI multimodal (text).
     2) Query Pinecone for similar embeddings (optionally filtered by person_id).
     3) Combine:
        - relevance (Pinecone score)
@@ -210,15 +204,16 @@ def retrieve_and_rank(
     # 6. Sort by final_score descending
     results.sort(key=lambda x: x["final_score"], reverse=True)
 
-    # 7. Deduplicate by pegasus_video_id: keep only the best-scoring entry per video
-    seen_pegasus_video_ids = set()
+    # 7. Deduplicate by video_file + start_time_sec: keep only the best-scoring entry per segment
+    seen = set()
     deduped = []
     for r in results:
-        vid = (r.get("metadata") or {}).get("pegasus_video_id")
-        if vid is None or vid not in seen_pegasus_video_ids:
+        md = r.get("metadata") or {}
+        key = (md.get("video_file"), md.get("start_time_sec"))
+        if key not in seen:
             deduped.append(r)
-            if vid is not None:
-                seen_pegasus_video_ids.add(vid)
+            if key[0] is not None:
+                seen.add(key)
     return deduped[:top_k]
 
 

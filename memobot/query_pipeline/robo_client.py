@@ -202,7 +202,7 @@ class RealtimeAgent:
 
             results = retrieve_and_rank(
                 question=query,
-                index_name="twelve-labs",
+                index_name="memobot-memories",
                 top_k=10,
                 alpha=0.5,
                 beta=0.3,

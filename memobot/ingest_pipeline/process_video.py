@@ -208,28 +208,37 @@ def process_video(video_filename: str) -> Tuple[List[Dict[str, Any]], Path]:
     t_end = time.perf_counter()
     print(f"[Timing] Step 2 (Diarization) took: {t_end - t_start:.2f}s")
 
-    # --- Step 2b: Filter robot voice (check once per unique speaker, not per turn) ---
+    # --- Step 2b: Filter robot voice (check once per unique speaker, in parallel) ---
     print("\n=== Step 2b: Filter robot voice ===")
     t_start = time.perf_counter()
-    
-    unique_speakers = sorted({t["speaker"] for t in turns})
-    speaker_is_robot = {}
-    for spk in unique_speakers:
-        print(f"[Robot check] {spk}...", flush=True)
+
+    def _check_one_speaker_robot(args):
+        spk, audio_path_str, turns_ref = args
         try:
-            clip_bytes = build_single_speaker_clip_bytes(
-                str(audio_wav_path), turns, spk
-            )
+            clip_bytes = build_single_speaker_clip_bytes(audio_path_str, turns_ref, spk)
         except Exception as e:
-            print(f"[Skip] Cannot build clip for {spk}: {e}")
-            speaker_is_robot[spk] = False
-            continue
+            return (spk, False, str(e))
         clip_key = f"clips/{uuid.uuid4().hex}_{spk}.wav"
         clip_media_url = upload_local_wav_to_media(clip_bytes, clip_key)
-        speaker_is_robot[spk] = is_robot_voice(clip_media_url)
-        if speaker_is_robot[spk]:
-            print(f"[Robot] {spk} is robot voice; skipping those turns.")
-    
+        is_robot = is_robot_voice(clip_media_url)
+        return (spk, is_robot, None)
+
+    unique_speakers = sorted({t["speaker"] for t in turns})
+    speaker_is_robot = {}
+    audio_wav_path_str = str(audio_wav_path)
+    max_workers_2b = min(len(unique_speakers), 4)
+    with ThreadPoolExecutor(max_workers=max_workers_2b) as executor:
+        args_list = [(spk, audio_wav_path_str, turns) for spk in unique_speakers]
+        for spk, is_robot, err in executor.map(_check_one_speaker_robot, args_list):
+            if err:
+                print(f"[Skip] Cannot build clip for {spk}: {err}")
+                speaker_is_robot[spk] = False
+            else:
+                print(f"[Robot check] {spk}...", flush=True)
+                speaker_is_robot[spk] = is_robot
+                if is_robot:
+                    print(f"[Robot] {spk} is robot voice; skipping those turns.")
+
     human_turns = [t for t in turns if not speaker_is_robot.get(t["speaker"], False)]
     t_end = time.perf_counter()
     print(f"[Timing] Step 2b (Robot filter) took: {t_end - t_start:.2f}s")
