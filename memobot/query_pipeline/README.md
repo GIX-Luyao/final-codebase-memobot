@@ -72,3 +72,7 @@ python query_pipeline/recognize_user.py
 ```
 
 Uses `query_pipeline/image.png` by default. It prints the matched person record (e.g. `person_id`, `name`, `face_id`) and exits.
+
+
+## To run Query:
+python query.py --person-id "ed26e82d-6c39-4ebd-b73b-91f07ed8a8f1" "Where do i go to school?"
