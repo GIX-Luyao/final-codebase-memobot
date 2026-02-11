@@ -7,12 +7,15 @@ embeddings (same model as ingest for semantic search), then re-rank results:
 FinalScore = alpha * relevance + beta * importance + gamma * time_decay
 """
 
+import json
 import os
 import math
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from dotenv import load_dotenv
+from google.oauth2 import service_account
 from pinecone import Pinecone
 
 # --------- ENV & CLIENTS ---------
@@ -21,10 +24,13 @@ load_dotenv()
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 VERTEX_AI_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("VERTEX_AI_PROJECT")
 VERTEX_AI_LOCATION = os.getenv("VERTEX_AI_LOCATION", "us-central1")
-EMBEDDING_DIMENSION = 512  # must match ingest pipeline
+QUERY_PIPELINE_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = QUERY_PIPELINE_ROOT.parent.parent
+VERTEX_AI_KEY_PATH = Path(
+    os.getenv("VERTEX_AI_SERVICE_ACCOUNT_JSON", str(PROJECT_ROOT / "vertex_ai_service_account.json"))
+)
+EMBEDDING_DIMENSION = 1408  # must match ingest pipeline
 
-if not VERTEX_AI_PROJECT:
-    raise RuntimeError("GOOGLE_CLOUD_PROJECT or VERTEX_AI_PROJECT not set in environment")
 if not PINECONE_API_KEY:
     raise RuntimeError("PINECONE_API_KEY not set in environment")
 
@@ -42,7 +48,24 @@ def get_text_embedding(text_query: str) -> List[float]:
     import vertexai
     from vertexai.vision_models import MultiModalEmbeddingModel
 
-    vertexai.init(project=VERTEX_AI_PROJECT, location=VERTEX_AI_LOCATION)
+    project = VERTEX_AI_PROJECT
+    credentials = None
+    if VERTEX_AI_KEY_PATH.exists():
+        credentials = service_account.Credentials.from_service_account_file(str(VERTEX_AI_KEY_PATH))
+        if not project:
+            with open(VERTEX_AI_KEY_PATH) as f:
+                project = json.load(f).get("project_id")
+    if not project:
+        raise RuntimeError(
+            "Vertex AI project not set. Set GOOGLE_CLOUD_PROJECT or VERTEX_AI_PROJECT in .env, "
+            "or use a service account JSON that contains project_id."
+        )
+
+    vertexai.init(
+        project=project,
+        location=VERTEX_AI_LOCATION,
+        credentials=credentials,
+    )
     model = MultiModalEmbeddingModel.from_pretrained("multimodalembedding@001")
     embeddings = model.get_embeddings(
         contextual_text=text_query,
@@ -245,14 +268,16 @@ def pretty_print_results(question: str, results: List[Dict[str, Any]], max_print
 
 
 if __name__ == "__main__":
+    import argparse
     import sys
 
-    if len(sys.argv) > 1:
-        question = " ".join(sys.argv[1:])
-    else:
-        question = input("Enter your question: ")
+    parser = argparse.ArgumentParser(description="Query video memories (Pinecone + Vertex AI).")
+    parser.add_argument("--person-id", type=str, default=None, help="Person ID for filtering memories (required for results).")
+    parser.add_argument("question", nargs="*", help="Question to search for (or leave empty to be prompted).")
+    args = parser.parse_args()
 
-    results = retrieve_and_rank(question)
+    question = " ".join(args.question).strip() if args.question else input("Enter your question: ")
+    results = retrieve_and_rank(question, person_id=args.person_id)
     if not results:
         print("No matches found.")
     else:
