@@ -1,6 +1,6 @@
 """
-Pipeline to ingest video and create embeddings using TwelveLabs API + Pinecone,
-with Pegasus summaries and importance scores as metadata.
+Pipeline to ingest video and create embeddings using Google Vertex AI multimodal
+embeddings + Pinecone, with Gemini video understanding (summary, importance, etc.) as metadata.
 """
 
 import os
@@ -12,410 +12,117 @@ from pathlib import Path
 import sys
 
 from dotenv import load_dotenv
-from twelvelabs import TwelveLabs
-from typing import Any
+from google.oauth2 import service_account
 from pinecone import Pinecone, ServerlessSpec
 
 # Load environment variables from .env file at memobot root
 MEMOBOT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = MEMOBOT_ROOT.parent
 sys.path.insert(0, str(MEMOBOT_ROOT))
 load_dotenv(dotenv_path=MEMOBOT_ROOT / ".env")
-TL_API_KEY = os.getenv("TWELVE_LABS_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+
+# Vertex AI multimodal embeddings (project/location from env or service account JSON)
+VERTEX_AI_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("VERTEX_AI_PROJECT")
+VERTEX_AI_LOCATION = os.getenv("VERTEX_AI_LOCATION", "us-central1")
+VERTEX_AI_KEY_PATH = Path(
+    os.getenv("VERTEX_AI_SERVICE_ACCOUNT_JSON", str(PROJECT_ROOT / "vertex_ai_service_account.json"))
+)
+# Pinecone index uses 512 dimensions; Vertex supports 128, 256, 512, 1408
+EMBEDDING_DIMENSION = 1408
+
+# Gemini API (video understanding + caption) - uses GOOGLE_API_KEY
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # Person DB helpers (person DB has no speaker_id; identify by face_id only)
 from utils.database import get_person_by_face_id
 
-# TwelveLabs client (used by generate_embedding and ingest_data)
-twelvelabs_client = TwelveLabs(api_key=TL_API_KEY)
-
 # Default paths (can be overridden via command-line args)
 DATA_DIR = Path(__file__).parent / "data"
 VIDEO_PATH = str(DATA_DIR / "30s_clip.mp4")  # Default video
-INDEX_NAME = "twelve-labs"
-PEGASUS_INDEX_NAME = "pegasus-video-memories"  # can reuse this for many videos
-
-
-def on_task_update(task: Any):
-    """Callback function to monitor embedding task progress."""
-    print(f"  Status={task.status}")
-
-
-def on_pegasus_task_update(task: Any):
-    """Callback for Pegasus indexing."""
-    print(f"  Pegasus index status={task.status}")
-
-
-# ---------- PEGASUS HELPERS (SUMMARY + IMPORTANCE) ----------
-
-def ensure_pegasus_index(tl_client: TwelveLabs, index_name: str = PEGASUS_INDEX_NAME):
-    """
-    Ensure there is a Pegasus index for analysis.
-    Creates it once if it doesn't exist.
-    """
-    # TwelveLabs SDK uses `client.indexes` (plural) in newer versions.
-    # Keep a small compatibility shim for older SDKs that used `client.index`.
-    indexes_client = getattr(tl_client, "indexes", None) or getattr(tl_client, "index", None)
-    if indexes_client is None:
-        raise AttributeError(
-            "Your installed 'twelvelabs' SDK does not expose 'client.indexes' or 'client.index'. "
-            "Try upgrading: pip install -U 'twelvelabs>=1.3.0'"
-        )
-
-    existing = list(indexes_client.list())
-    for idx in existing:
-        idx_name = getattr(idx, "index_name", None) or (idx.get("index_name") if isinstance(idx, dict) else None)
-        if idx_name == index_name:
-            return idx
-
-    print(f"Creating Pegasus index: {index_name}")
-    index = indexes_client.create(
-        index_name=index_name,
-        models=[
-            {
-                "model_name": "pegasus1.2",
-                "model_options": ["visual", "audio"]
-            }
-        ],
-    )
-    print(f"Created Pegasus index: id={index.id}")
-    return index
-
-
-def upload_video_to_pegasus(
-    tl_client: TwelveLabs,
-    index_id: str,
-    video_source: str,
-) -> str:
-    """
-    Upload the same video to Pegasus index and return its video_id.
-    """
-    is_url = video_source.startswith(("http://", "https://"))
-
-    # TwelveLabs SDK uses `client.tasks` (plural) in newer versions.
-    # Keep a small compatibility shim for older SDKs that used `client.task`.
-    tasks_client = getattr(tl_client, "tasks", None) or getattr(tl_client, "task", None)
-    if tasks_client is None:
-        raise AttributeError(
-            "Your installed 'twelvelabs' SDK does not expose 'client.tasks' or 'client.task'. "
-            "Try upgrading: pip install -U 'twelvelabs>=1.3.0'"
-        )
-
-    if is_url:
-        task = tasks_client.create(
-            index_id=index_id,
-            video_url=video_source,
-        )
-    else:
-        video_file_path = os.path.abspath(video_source)
-        if not os.path.exists(video_file_path):
-            raise FileNotFoundError(f"Video file not found for Pegasus: {video_file_path}")
-        task = tasks_client.create(
-            index_id=index_id,
-            video_file=open(video_file_path, "rb"),
-        )
-
-    print(f"Pegasus task created: id={task.id}")
-    task = tasks_client.wait_for_done(
-        task_id=task.id,
-        callback=on_pegasus_task_update
-    )
-    if task.status != "ready":
-        raise RuntimeError(f"Pegasus indexing failed with status {task.status}")
-    print(f"Pegasus upload complete. video_id={task.video_id}")
-    return task.video_id
-
-
-def analyze_segment_with_pegasus(
-    tl_client: TwelveLabs,
-    video_id: str,
-    start_sec: float,
-    end_sec: float,
-    embedding_option=None,
-    segment_dialogue=None,
-):
-    """
-    Call Pegasus analyze_stream for a specific time window and
-    return (summary, importance_score, talking_to_camera).
-
-    We prompt Pegasus to respond with strict JSON:
-    {
-      "summary": "...",
-      "importance_score": 1-10,
-      "talking_to_camera": 0.0-1.0
-    }
-
-    When segment_dialogue is provided (from process_video), the summary MUST
-    include the spoken words and the name of who spoke (person_id / name / face_id).
-
-    Parameters
-    ----------
-    embedding_option : str or list, optional
-        The embedding option type: "visual", "audio", "transcription", or a list
-    segment_dialogue : list of dict, optional
-        From process_video: [{person_id, name, face_id, text, start, end}, ...]
-        for turns overlapping this segment. Used to include spoken words and
-        speaker identity in the summary.
-
-    Returns
-    -------
-    tuple
-        (summary, importance_score, talking_to_camera)
-    """
-    # Determine the primary embedding option (handle both string and list)
-    if isinstance(embedding_option, list):
-        primary_option = embedding_option[0] if embedding_option else "visual"
-    else:
-        primary_option = embedding_option or "visual"
-
-    # Build dialogue block when we have identified speech from process_video
-    dialogue_block = ""
-    if segment_dialogue:
-        lines = []
-        for t in segment_dialogue:
-            name = t.get("name") or t.get("person_id") or t.get("face_id") or "Unknown"
-            text = (t.get("text") or "").strip()
-            if text:
-                lines.append(f"  - {name}: \"{text}\"")
-        if lines:
-            dialogue_block = """
-The following spoken dialogue was identified in this segment (who said what).
-Your summary MUST include this dialogue, attributing each quote to the speaker
-(use the person name when available, otherwise person_id or face_id):
-
-"""
-            dialogue_block += "\n".join(lines)
-            dialogue_block += "\n\n"
-
-    # Create different prompts based on embedding option
-    if primary_option == "transcription":
-        instruction = f"""
-1. Briefly summarize in ONE concise sentence what happens in this time range.
-   FOCUS: This segment is based on transcription/audio. Include ALL spoken words,
-   dialogue, and any text that appears. Quote or paraphrase exactly what is said.
-   If there are multiple speakers, identify who says what (by name/face_id when given).
-{dialogue_block}   When dialogue is provided above, your summary MUST include those spoken words
-   and the name of who spoke each one. Include any on-screen text.
-"""
-    elif primary_option == "audio":
-        instruction = f"""
-1. Briefly summarize in ONE concise sentence what happens in this time range.
-   FOCUS: This segment is based on audio. Include ALL spoken words, dialogue,
-   sounds, music, and audio cues. Quote or paraphrase what is said. Describe
-   any important sounds or audio events.
-{dialogue_block}   When dialogue is provided above, your summary MUST include those spoken words
-   and the name of who spoke each one. Include any on-screen text if visible.
-"""
-    else:  # visual (default)
-        instruction = f"""
-1. Briefly summarize in ONE concise sentence what happens in this time range.
-   FOCUS: This segment is based on visual content. Describe what you see happening
-   visually.
-{dialogue_block}   When dialogue is provided above, your summary MUST include those spoken words
-   and the name of who spoke each one. If there is any other spoken dialogue or
-   on-screen text, include it as well.
-"""
-
-    prompt = f"""
-You are analyzing a short memory segment from a longer video.
-
-Only consider the portion of the video between {start_sec:.2f} and {end_sec:.2f} seconds.
-
-{instruction}
-2. Rate how important this event is for understanding the agent's day,
-   on a scale from 1 to 10. Use the FULL range of scores - don't default to middle values.
-   
-   Scoring guidelines:
-   - 1-2: Trivial background noise, idle waiting, meaningless filler (e.g., "um", "uh", silence)
-   - 3-4: Minor routine actions, casual conversation without significance, ambient sounds
-   - 5-6: Normal activities, standard interactions, routine tasks (e.g., opening a door, basic movement)
-   - 7-8: Notable events, meaningful conversations, important actions, decisions being made
-   - 9-10: Critical moments, major decisions, significant events that strongly impact the day,
-           emotional moments, task completions, failures, or breakthroughs
-   
-   IMPORTANT: Just because someone is talking doesn't make it important. Consider:
-   - Is this a meaningful conversation or just filler?
-   - Does this action/event have consequences?
-   - Would forgetting this change understanding of the day?
-   - Is this routine vs. exceptional?
-   
-   Use scores across the full 1-10 range based on actual significance, not just presence of speech.
-
-3. Determine if ANYONE is talking to or looking at the camera in this segment.
-   This measures whether any person in the video is addressing the camera (looking at or speaking to the camera).
-   Provide a confidence score strictly between 0.0 and 1.0 (never exactly 0.0 or 1.0):
-   - 0.01-0.2: Very unlikely - no one appears to be addressing the camera (e.g., everyone looking away, talking to others, no one visible)
-   - 0.3-0.4: Possibly looking at camera but unclear (e.g., brief glance, ambiguous direction, might be addressing camera)
-   - 0.5: Uncertain or ambiguous (e.g., unclear who is being addressed, partial camera view, could go either way)
-   - 0.6-0.7: Likely talking to/looking at camera (e.g., facing camera direction, using "you", but not fully clear)
-   - 0.8-0.99: Very likely talking to or looking at the camera (e.g., direct eye contact with camera, clearly addressing camera, 
-                sustained gaze at camera, direct speech to camera/viewer)
-   
-   IMPORTANT: The score must ALWAYS be between 0.0 and 1.0 (exclusive) - never exactly 0.0 or 1.0.
-   Use values like 0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99, etc.
-   
-   KEY INDICATORS for high confidence (0.8-0.99):
-   - Direct eye contact with the camera lens
-   - Person facing the camera and speaking
-   - Sustained gaze/look into the camera
-   - Speech clearly directed at the camera/viewer
-   - Using second person ("you") while looking at camera
-
-Respond ONLY in valid JSON, with this exact schema:
-{{
-  "summary": "<one sentence>",
-  "importance_score": <integer between 1 and 10>,
-  "talking_to_camera": <float strictly between 0.0 and 1.0 (never exactly 0.0 or 1.0)>
-}}
-"""
-
-    # TwelveLabs streaming analysis is rate-limited (e.g., 8 req / minute).
-    # We only *intend* to call this once per 30s clip, but add a small retry
-    # shim for transient 429s so reruns don't instantly fail.
-    collected = ""
-    max_attempts = 6
-    for attempt in range(1, max_attempts + 1):
-        try:
-            text_stream = tl_client.analyze_stream(video_id=video_id, prompt=prompt)
-            for chunk in text_stream:
-                if chunk.event_type == "text_generation":
-                    collected += chunk.text
-            break
-        except Exception as e:
-            status_code = getattr(e, "status_code", None)
-            headers = getattr(e, "headers", None) or {}
-            retry_after = headers.get("retry-after") or headers.get("Retry-After")
-            if status_code == 429 and retry_after is not None and attempt < max_attempts:
-                try:
-                    sleep_s = float(retry_after)
-                except Exception:
-                    sleep_s = 10.0
-                time.sleep(max(0.0, sleep_s))
-                continue
-            raise
-
-    # Try to extract JSON object from the streamed text
-    match = re.search(r"\{.*\}", collected, re.DOTALL)
-    if not match:
-        # Fallback: treat whole text as summary with unknown importance and confidence
-        return collected.strip(), None, None
-
-    try:
-        data = json.loads(match.group(0))
-        summary = data.get("summary", "").strip()
-        importance = data.get("importance_score", None)
-        talking_to_camera = data.get("talking_to_camera", None)
-        # Ensure talking_to_camera is a float strictly between 0.0 and 1.0 (never exactly 0 or 1)
-        if talking_to_camera is not None:
-            talking_to_camera = float(talking_to_camera)
-        return summary, importance, talking_to_camera
-    except json.JSONDecodeError:
-        return collected.strip(), None, None
+INDEX_NAME = "memobot-memories"
 
 
 # ---------- EMBEDDING + PINECONE PIPELINE ----------
 
 def generate_embedding(video_source, clip_length=30):
     """
-    Generate embeddings for a video using TwelveLabs Embed v_2 API.
+    Generate embeddings for a video using Google Vertex AI multimodal embeddings
+    (multimodalembedding@001). Supports local file path or GCS URI (gs://...).
 
-    Notes (TwelveLabs v1.3):
-    - "clip"-scope embeddings are constrained to 2–10s clip lengths.
-    - To embed an entire 30s (or longer) file as a single vector, request
-      the "video" scope.
+    Ref: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/embeddings/get-multimodal-embeddings
     """
-    # Ensure the installed SDK supports v1.3 Embed v_2 + Assets API.
-    # Older SDKs expose only embed.task and will not work with the v1.3 quickstart.
-    if not hasattr(twelvelabs_client, "assets") or not hasattr(getattr(twelvelabs_client, "embed", None), "v_2"):
+    import vertexai
+    from vertexai.vision_models import MultiModalEmbeddingModel, Video
+    from vertexai.vision_models import VideoSegmentConfig
+
+    project = VERTEX_AI_PROJECT
+    credentials = None
+    if VERTEX_AI_KEY_PATH.exists():
+        credentials = service_account.Credentials.from_service_account_file(str(VERTEX_AI_KEY_PATH))
+        if not project:
+            with open(VERTEX_AI_KEY_PATH) as f:
+                project = json.load(f).get("project_id")
+    if not project:
         raise RuntimeError(
-            "Your installed 'twelvelabs' SDK is too old (missing client.assets and/or client.embed.v_2).\n"
-            "Upgrade it and retry:\n"
-            "  pip install -U 'twelvelabs>=1.3.0'\n"
-            "This repo's requirements.txt now pins twelvelabs>=1.3.0."
+            "Vertex AI project not set. Set GOOGLE_CLOUD_PROJECT or VERTEX_AI_PROJECT in .env, "
+            "or use a service account JSON that contains project_id."
         )
 
-    # Import request helper classes if available (SDK also accepts plain dicts).
-    try:
-        from twelvelabs import VideoInputRequest, MediaSource  # type: ignore
-        have_models = True
-    except Exception:
-        VideoInputRequest = None  # type: ignore
-        MediaSource = None  # type: ignore
-        have_models = False
+    vertexai.init(
+        project=project,
+        location=VERTEX_AI_LOCATION,
+        credentials=credentials,
+    )
+    model = MultiModalEmbeddingModel.from_pretrained("multimodalembedding@001")
 
-    is_url = video_source.startswith(("http://", "https://"))
-
-    # 1) Create an asset (upload) from URL or local file
-    if is_url:
-        print(f"Uploading video via URL: {video_source}")
-        asset = twelvelabs_client.assets.create(method="url", url=video_source)
+    # Load video: GCS URI or local path (SDK handles base64 for local files)
+    is_gcs = video_source.startswith("gs://")
+    if is_gcs:
+        print(f"Loading video from GCS: {video_source}")
+        video = Video.load_from_file(video_source)
     else:
-        video_file_path = os.path.abspath(video_source)
-        if not os.path.exists(video_file_path):
-            raise FileNotFoundError(f"Video file not found: {video_file_path}")
-        print(f"Uploading local video file: {video_file_path}")
-        with open(video_file_path, "rb") as f:
-            asset = twelvelabs_client.assets.create(method="direct", file=f)
+        video_path = os.path.abspath(video_source)
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"Video file not found: {video_path}")
+        print(f"Loading local video: {video_path}")
+        video = Video.load_from_file(video_path)
 
-    asset_id = getattr(asset, "id", None) or getattr(asset, "_id", None)
-    if not asset_id:
-        raise RuntimeError("Failed to create TwelveLabs asset (missing asset id).")
-    print(f"Created asset: id={asset_id}")
+    # One segment for the clip [0, clip_length]. Min interval_sec is 4.
+    interval_sec = max(4.0, min(float(clip_length), 120.0))
+    video_segment_config = VideoSegmentConfig(
+        start_offset_sec=0,
+        end_offset_sec=float(clip_length),
+        interval_sec=interval_sec,
+    )
 
-    # 2) Request embeddings for the 30s clip as ONE vector per modality.
-    #
-    # In the current TwelveLabs SDK, this is done via:
-    # - embedding_scope=["asset"] (one vector for the whole asset / requested range)
-    # - embedding_option=["visual","audio","transcription"] (three modalities)
-    # - start_sec/end_sec to constrain to the 30s clip
-    if have_models:
-        video_req = VideoInputRequest(
-            media_source=MediaSource(asset_id=asset_id),
-            start_sec=0.0,
-            end_sec=float(clip_length),
-            embedding_scope=["asset"],
-            embedding_option=["audio"],
-        )
-    else:
-        video_req = {
-            "media_source": {"asset_id": asset_id},
-            "start_sec": 0.0,
-            "end_sec": float(clip_length),
-            "embedding_scope": ["asset"],
-            "embedding_option": ["audio"],
-        }
-
-    response = twelvelabs_client.embed.v_2.create(
-        input_type="video",
-        model_name="marengo3.0",
-        video=video_req,
+    embeddings_response = model.get_embeddings(
+        video=video,
+        video_segment_config=video_segment_config,
+        dimension=EMBEDDING_DIMENSION,
     )
 
     embeddings = []
-    data = getattr(response, "data", None) or []
-    for emb in data:
-        # Normalize SDK field naming across versions
-        start = getattr(emb, "start_sec", getattr(emb, "startSec", 0.0))
-        end = getattr(emb, "end_sec", getattr(emb, "endSec", 0.0))
-        option = getattr(emb, "embedding_option", getattr(emb, "embeddingOption", "visual"))
-        scope = getattr(emb, "embedding_scope", getattr(emb, "embeddingScope", "video"))
-        vec = getattr(emb, "embedding", None)
+    for seg in embeddings_response.video_embeddings:
+        start_sec = getattr(seg, "start_offset_sec", 0.0)
+        end_sec = getattr(seg, "end_offset_sec", float(clip_length))
+        vec = getattr(seg, "embedding", None)
         if vec is None:
             continue
         embeddings.append(
             {
-                "embedding": vec,
-                "start_offset_sec": float(start or 0.0),
-                "end_offset_sec": float(end or float(clip_length)),
-                "embedding_scope": scope,
-                "embedding_option": option,
+                "embedding": list(vec) if hasattr(vec, "__iter__") and not isinstance(vec, str) else vec,
+                "start_offset_sec": float(start_sec),
+                "end_offset_sec": float(end_sec),
+                "embedding_scope": "asset",
+                "embedding_option": "video",
             }
         )
 
     if not embeddings:
-        raise RuntimeError("No embeddings returned from TwelveLabs embed.v_2.create().")
+        raise RuntimeError("No video embeddings returned from Vertex AI multimodal embedding model.")
 
-    return embeddings, response
+    return embeddings, embeddings_response
 
 
 def _turns_in_segment(process_video_results, start_sec: float, end_sec: float):
@@ -497,16 +204,15 @@ def _video_name_from_source(video_source: str) -> str:
 
 def run_embeddings_only(video_source: str, index_name: str, clip_length: float):
     """
-    Memory builder — embeddings side only.
-    Upload video, generate Marengo embeddings. Safe to run in parallel with
-    process_video and run_pegasus_caption_only.
+    Memory builder — embeddings side only (Vertex AI multimodal).
+    Safe to run in parallel with process_video and run_gemini_video_understanding.
     """
     t_start = time.perf_counter()
     video_name = _video_name_from_source(video_source)
     print(f"[Embeddings] Processing video: {video_name}")
     embeddings, _ = generate_embedding(video_source, clip_length)
     t_end = time.perf_counter()
-    print(f"[Timing] Embeddings (Marengo) took: {t_end - t_start:.2f}s")
+    print(f"[Timing] Embeddings (Vertex AI multimodal) took: {t_end - t_start:.2f}s")
     return {
         "video_source": video_source,
         "video_name": video_name,
@@ -517,44 +223,130 @@ def run_embeddings_only(video_source: str, index_name: str, clip_length: float):
     }
 
 
-def run_pegasus_caption_only(video_source: str, clip_length: float):
+# ---------- GEMINI VIDEO UNDERSTANDING (SUMMARY + IMPORTANCE + TALKING_TO_CAMERA) ----------
+
+GEMINI_VIDEO_PROMPT = """You are analyzing a short memory segment from a video (audio + visual).
+
+1. In ONE concise sentence, summarize what happens in this segment: what you see and hear, who appears, what is said or shown, and key actions or dialogue. Include timestamps (MM:SS) for salient moments if helpful.
+
+2. Rate how important this event is for understanding the agent's day, on a scale from 1 to 10. Use the full range:
+   - 1-2: Trivial (silence, filler, idle)
+   - 3-4: Minor routine, casual chat
+   - 5-6: Normal activities, routine tasks
+   - 7-8: Notable events, meaningful conversation
+   - 9-10: Critical moments, major decisions
+   Consider: Is this meaningful or filler? Would forgetting this change understanding?
+
+3. How likely is anyone talking to or looking at the camera? Give a confidence score strictly between 0.0 and 1.0 (never exactly 0.0 or 1.0):
+   - 0.01-0.2: No one addressing camera
+   - 0.5: Uncertain
+   - 0.8-0.99: Very likely (eye contact, facing camera, speaking to viewer)
+
+4. In a short paragraph (detailed_understanding), describe key events with both audio and visual details and timestamps.
+
+Respond ONLY with valid JSON in this exact schema:
+{
+  "summary": "<one sentence>",
+  "importance_score": <integer 1-10>,
+  "talking_to_camera": <float strictly between 0.0 and 1.0>,
+  "detailed_understanding": "<paragraph with key events, timestamps, audio/visual details>"
+}"""
+
+
+def run_gemini_video_understanding(video_source: str, clip_length: float):
     """
-    Memory builder — video understanding caption only (Pegasus).
-    Upload to Pegasus, analyze segment for summary/importance. Safe to run in
-    parallel with process_video and run_embeddings_only. Caption is produced
-    without dialogue (segment_dialogue=None) so it can run before process_video.
+    Get video understanding from Gemini API: summary, importance_score, talking_to_camera, detailed_understanding.
+    Uses File API for upload then generate_content. Supports local file path only.
+    Ref: https://ai.google.dev/gemini-api/docs/video-understanding
+    Returns dict with summary, importance_score, talking_to_camera, gemini_understanding (detailed_understanding).
     """
-    t_start = time.perf_counter()
-    video_name = _video_name_from_source(video_source)
-    print(f"[Pegasus] Processing video: {video_name}")
-    pegasus_index = ensure_pegasus_index(twelvelabs_client, PEGASUS_INDEX_NAME)
-    pegasus_video_id = upload_video_to_pegasus(
-        twelvelabs_client,
-        pegasus_index.id,
-        video_source,
-    )
-    clip_start_sec = 0.0
-    clip_end_sec = float(clip_length)
-    summary, importance, talking_to_camera = analyze_segment_with_pegasus(
-        twelvelabs_client,
-        pegasus_video_id,
-        clip_start_sec,
-        clip_end_sec,
-        embedding_option="visual",
-        segment_dialogue=None,
-    )
-    t_end = time.perf_counter()
-    print(f"[Timing] Pegasus (upload + caption) took: {t_end - t_start:.2f}s")
-    return {
-        "video_source": video_source,
-        "video_name": video_name,
-        "pegasus_video_id": pegasus_video_id,
-        "summary": summary,
-        "importance_score": importance,
-        "talking_to_camera": talking_to_camera,
-        "clip_start_sec": clip_start_sec,
-        "clip_end_sec": clip_end_sec,
+    empty = {
+        "summary": "",
+        "importance_score": None,
+        "talking_to_camera": None,
+        "gemini_understanding": "",
     }
+    if not GOOGLE_API_KEY:
+        print("[Gemini] Skipping video understanding: GOOGLE_API_KEY not set.")
+        return empty
+
+    is_url = video_source.startswith(("http://", "https://"))
+    if is_url:
+        print("[Gemini] Skipping video understanding: URL input not supported (use local file or GCS).")
+        return empty
+
+    video_path = os.path.abspath(video_source)
+    if not os.path.exists(video_path):
+        print(f"[Gemini] Skipping video understanding: file not found {video_path}")
+        return empty
+
+    t_start = time.perf_counter()
+    try:
+        from google import genai
+    except ImportError:
+        print("[Gemini] Skipping video understanding: google-genai not installed (pip install google-genai).")
+        return empty
+
+    try:
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+        from google.genai import types as genai_types
+    except Exception as e:
+        print(f"[Gemini] Skipping video understanding: client init failed: {e}")
+        return empty
+
+    try:
+        myfile = client.files.upload(file=video_path)
+        # File must be ACTIVE before use; upload returns while still PROCESSING.
+        file_name = getattr(myfile, "name", None) or myfile
+        if isinstance(file_name, str):
+            poll_interval = 2
+            max_wait_sec = 120
+            waited = 0
+            while waited < max_wait_sec:
+                f = client.files.get(name=file_name)
+                state = getattr(f, "state", None)
+                state_str = str(state).split(".")[-1] if state is not None else ""
+                if state == genai_types.FileState.ACTIVE or "ACTIVE" in state_str:
+                    break
+                if state == genai_types.FileState.FAILED or "FAILED" in state_str:
+                    print(f"[Gemini] Uploaded file entered FAILED state: {file_name}")
+                    return empty
+                time.sleep(poll_interval)
+                waited += poll_interval
+                print(".", end="", flush=True)
+            if waited >= max_wait_sec:
+                print(f"[Gemini] File did not become ACTIVE within {max_wait_sec}s")
+                return empty
+            print(" ready.")
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[myfile, GEMINI_VIDEO_PROMPT],
+        )
+        text = (response.text or "").strip()
+        if not text:
+            print("[Gemini] Video understanding returned empty text.")
+            return empty
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            return {"summary": text[:500], "importance_score": None, "talking_to_camera": None, "gemini_understanding": text}
+        data = json.loads(match.group(0))
+        summary = (data.get("summary") or "").strip()
+        importance = data.get("importance_score")
+        talking = data.get("talking_to_camera")
+        if talking is not None:
+            talking = float(talking)
+        detailed = (data.get("detailed_understanding") or "").strip()
+        t_end = time.perf_counter()
+        print(f"[Timing] Gemini video understanding took: {t_end - t_start:.2f}s")
+        return {
+            "summary": summary or text[:500],
+            "importance_score": importance,
+            "talking_to_camera": talking,
+            "gemini_understanding": detailed or text,
+        }
+    except Exception as e:
+        print(f"[Gemini] Video understanding failed: {e}")
+        return empty
 
 
 def merge_and_upsert(
@@ -562,30 +354,31 @@ def merge_and_upsert(
     index_name: str,
     clip_length: float,
     embeddings_result: dict,
-    pegasus_result: dict,
     process_video_results: list,
     memobot_group_id: str = None,
     full_audio_dialogue: str = None,
+    gemini_result: dict = None,
 ):
     """
-    Merge results from process_video, embeddings, and Pegasus; upsert to Pinecone.
-    Call after running process_video, run_embeddings_only, and run_pegasus_caption_only
+    Merge results from process_video, embeddings, and Gemini; upsert to Pinecone.
+    Call after running process_video, run_embeddings_only, and run_gemini_video_understanding
     in parallel. If full_audio_dialogue is provided (robot + person_id lines), it is
     used as audio_dialogue; otherwise built from process_video_results.
     """
     if memobot_group_id is None:
         memobot_group_id = os.getenv("MEMOBOT_GROUP_ID", "tenant_003")
 
+    gemini_result = gemini_result or {}
     process_video_results = process_video_results or []
     video_name = embeddings_result["video_name"]
     embeddings = embeddings_result["embeddings"]
     clip_start_sec = embeddings_result["clip_start_sec"]
     clip_end_sec = embeddings_result["clip_end_sec"]
 
-    summary = pegasus_result.get("summary")
-    importance = pegasus_result.get("importance_score")
-    talking_to_camera = pegasus_result.get("talking_to_camera")
-    pegasus_video_id = pegasus_result.get("pegasus_video_id")
+    summary = gemini_result.get("summary") or ""
+    importance = gemini_result.get("importance_score")
+    talking_to_camera = gemini_result.get("talking_to_camera")
+    gemini_understanding = gemini_result.get("gemini_understanding") or ""
 
     clip_dialogue = _turns_in_segment(process_video_results, clip_start_sec, clip_end_sec)
     person_ids, persons = _persons_in_turns(clip_dialogue)
@@ -625,10 +418,10 @@ def merge_and_upsert(
             "summary": summary,
             "importance_score": importance,
             "talking_to_camera": talking_to_camera,
-            "pegasus_video_id": pegasus_video_id,
             "person_ids": person_ids,
             "audio_dialogue": audio_dialogue,
             "memobot_group_id": memobot_group_id,
+            "gemini_understanding": gemini_understanding[:40_000] if gemini_understanding else "",  # Pinecone metadata limit
         }
         vectors_to_upsert.append((vector_id, emb["embedding"], metadata))
 
@@ -647,34 +440,36 @@ def merge_and_upsert(
         "audio_dialogue": audio_dialogue,
         "person_ids": person_ids,
         "persons": persons,
+        "gemini_understanding": gemini_understanding,
     }
 
 
-def ingest_data(video_source, index_name="twelve-labs", clip_length=30, process_video_results=None, memobot_group_id=None):
+def ingest_data(video_source, index_name=None, clip_length=30, process_video_results=None, memobot_group_id=None):
     """
-    Generate one embedding and one Pegasus summary per video, then upsert to Pinecone.
-    Sequential fallback: runs embeddings and Pegasus in sequence, then merge.
-    For parallel execution use run_embeddings_only, run_pegasus_caption_only, and merge_and_upsert from main.
+    Generate one embedding and Gemini video understanding per video, then upsert to Pinecone.
+    Sequential fallback: runs embeddings and Gemini in sequence, then merge.
+    For parallel execution use run_embeddings_only, run_gemini_video_understanding, and merge_and_upsert from main.
     """
+    if index_name is None:
+        index_name = INDEX_NAME
     process_video_results = process_video_results or []
     if memobot_group_id is None:
         memobot_group_id = os.getenv("MEMOBOT_GROUP_ID", "tenant_003")
 
     embeddings_result = run_embeddings_only(video_source, index_name, clip_length)
-    pegasus_result = run_pegasus_caption_only(video_source, clip_length)
+    gemini_result = run_gemini_video_understanding(video_source, clip_length)
     return merge_and_upsert(
         video_source,
         index_name,
         clip_length,
         embeddings_result,
-        pegasus_result,
         process_video_results,
         memobot_group_id,
+        gemini_result=gemini_result,
     )
 
 
 if __name__ == "__main__":
-    # Initialize clients (twelvelabs_client created at module level)
     print("Initializing Pinecone client...")
     pc = Pinecone(api_key=PINECONE_API_KEY)
     
