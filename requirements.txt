@@ -1,76 +1,107 @@
-# FastAPI and server dependencies
+# =========================
+# Runtime: Python 3.11
+# =========================
+
+# ---------- FastAPI / Server ----------
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-pydantic-core>=2.18.2
-pydantic-settings==2.1.0
 python-multipart==0.0.6
+aiofiles==23.2.1
 
-# WebSocket support
-websockets==12.0
+# ---------- HTTP / Networking ----------
+httpx==0.25.2
+requests>=2.32.3,<3
 
-# Database
+# ---------- WebSocket ----------
+websockets>=12,<17
+
+# ---------- Pydantic ----------
+pydantic==2.12.5
+pydantic-settings==2.1.0
+typing_extensions==4.15.0
+annotated-types==0.7.0
+
+# ---------- Utilities ----------
+python-dotenv>=1.0.1,<2
+python-dateutil>=2.8.2,<3
+packaging>=24.2,<26
+orjson>=3.11.5,<4
+tqdm>=4.67.1,<5
+six==1.17.0
+
+# ---------- Auth / Security ----------
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# ---------- Database (Postgres) ----------
 psycopg2-binary==2.9.9
 sqlalchemy==2.0.23
 alembic==1.13.0
 pgvector==0.2.4
 
-# Vector embeddings
-openai==1.3.7
-sentence-transformers==2.2.2
-numpy==1.26.2
+# ---------- Graph DB ----------
+neo4j>=5.14.0,<7
 
-# HTTP client
-httpx==0.25.2
-requests==2.31.0
+# ---------- Graph / Memory ----------
+graphiti-core @ git+https://github.com/Cathy-ZYX119/graphiti.git@cedc7a08600d5573cd2b2b7fcaa796f5876240ba
+diskcache==5.6.3
 
-# Async file operations
-aiofiles==23.2.1
-
-# Background jobs
+# ---------- Background Jobs ----------
 celery==5.3.4
 redis==5.0.1
 
-# Utilities
-python-dotenv==1.0.0
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-python-dateutil==2.8.2
+# ---------- Monitoring ----------
+prometheus-client==0.19.0
+posthog==7.7.0
 
-# Testing
+# ---------- Vector / Embeddings ----------
+openai>=1.3.7,<3
+sentence-transformers==2.2.2
+numpy>=1.26.2,<2
+
+# ---------- Pinecone ----------
+pinecone>=7,<9
+pinecone-plugin-assistant==3.0.1
+pinecone-plugin-interface>=0.0.7,<1
+
+# ---------- Video / AI APIs ----------
+# Google Vertex AI + Gemini (embeddings + video understanding)
+google-cloud-aiplatform
+google-genai
+
+# ---------- CV / Audio / Video ----------
+opencv-python>=4.8,<5
+av>=10,<13
+sounddevice==0.5.5
+pyaudio>=0.2.13
+python_speech_features>=0.6
+scenedetect>=0.6
+gdown>=5
+pandas>=2,<3
+
+# ---------- Speaker diarization / Face ----------
+pyannote.audio==3.3.2
+deepface>=0.0.79
+
+# ---------- TensorFlow ----------
+tensorflow==2.19.0
+tensorflow-metal; platform_system=="Darwin"
+tf-keras
+pyarrow==17.0.0
+
+# ---------- Testing ----------
 pytest==7.4.3
 pytest-asyncio==0.21.1
 
-# Monitoring
-prometheus-client==0.19.0
+# ---------- Retry ----------
+backoff==2.2.1
+tenacity==9.1.2
 
-# Speaker diarization
-pyannote.audio
+silero-vad 
+torch
 
-opencv-python 
+# Google Vertex AI (multimodal embeddings for ingest pipeline)
+google-cloud-aiplatform
 
-python_speech_features
-scenedetect
-gdown
-
-deepface
-pandas
-
-# TensorFlow and dependencies (macOS compatible versions)
-tensorflow==2.19.0
-tensorflow-metal
-pyarrow==17.0.0
-
-tf-keras
-
-pyaudio
-
-# Voice activity detection (Silero VAD)
-silero-vad
-torch>=1.12.0
-
-# Note: Python 3.9.6 is required
-# Graph Database (optional, for future entity/relation storage)
-neo4j==5.14.0
-
-twelvelabs>=1.2.0b0
-pinecone
+# Gemini API (video understanding for ingest pipeline)
+google-genai

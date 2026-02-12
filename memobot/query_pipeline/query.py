@@ -1,63 +1,80 @@
 """
 query.py
 
-Query video "memories" stored in Pinecone using TwelveLabs embeddings,
-then re-rank results with an AI-Town style score:
+Query video "memories" stored in Pinecone using Google Vertex AI multimodal
+embeddings (same model as ingest for semantic search), then re-rank results:
 
 FinalScore = alpha * relevance + beta * importance + gamma * time_decay
 """
 
+import json
 import os
 import math
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from dotenv import load_dotenv
-from twelvelabs import TwelveLabs
+from google.oauth2 import service_account
 from pinecone import Pinecone
 
 # --------- ENV & CLIENTS ---------
 
 load_dotenv()
-TL_API_KEY = os.getenv("TWELVE_LABS_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+VERTEX_AI_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT") or os.getenv("VERTEX_AI_PROJECT")
+VERTEX_AI_LOCATION = os.getenv("VERTEX_AI_LOCATION", "us-central1")
+QUERY_PIPELINE_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = QUERY_PIPELINE_ROOT.parent.parent
+VERTEX_AI_KEY_PATH = Path(
+    os.getenv("VERTEX_AI_SERVICE_ACCOUNT_JSON", str(PROJECT_ROOT / "vertex_ai_service_account.json"))
+)
+EMBEDDING_DIMENSION = 1408  # must match ingest pipeline
 
-if not TL_API_KEY:
-    raise RuntimeError("TWELVE_LABS_API_KEY not set in environment")
 if not PINECONE_API_KEY:
     raise RuntimeError("PINECONE_API_KEY not set in environment")
 
-twelvelabs_client = TwelveLabs(api_key=TL_API_KEY)
 pc = Pinecone(api_key=PINECONE_API_KEY)
 
 
-# --------- EMBEDDING FOR TEXT QUERY (USING TWELVELABS) ---------
+# --------- EMBEDDING FOR TEXT QUERY (VERTEX AI MULTIMODAL, TEXT-ONLY) ---------
 
 def get_text_embedding(text_query: str) -> List[float]:
     """
-    Convert a text question into an embedding using TwelveLabs Embed API.
-
-    Matches the pattern:
-
-        res = client.embed.create(model_name="marengo3.0", text="...")
-        res.text_embedding.segments[0].float_
-
-    Returns: a single vector (list of floats) to query Pinecone.
+    Convert a text question into an embedding using Vertex AI multimodal model
+    (text-only; same semantic space as video embeddings at ingest).
+    Returns: a single 512-d vector (list of floats) to query Pinecone.
     """
-    res = twelvelabs_client.embed.create(
-        model_name="marengo3.0",
-        text=text_query,
+    import vertexai
+    from vertexai.vision_models import MultiModalEmbeddingModel
+
+    project = VERTEX_AI_PROJECT
+    credentials = None
+    if VERTEX_AI_KEY_PATH.exists():
+        credentials = service_account.Credentials.from_service_account_file(str(VERTEX_AI_KEY_PATH))
+        if not project:
+            with open(VERTEX_AI_KEY_PATH) as f:
+                project = json.load(f).get("project_id")
+    if not project:
+        raise RuntimeError(
+            "Vertex AI project not set. Set GOOGLE_CLOUD_PROJECT or VERTEX_AI_PROJECT in .env, "
+            "or use a service account JSON that contains project_id."
+        )
+
+    vertexai.init(
+        project=project,
+        location=VERTEX_AI_LOCATION,
+        credentials=credentials,
     )
-
-    if res.text_embedding is None or res.text_embedding.segments is None:
-        raise RuntimeError("No text_embedding segments returned from TwelveLabs")
-
-    segments = res.text_embedding.segments
-    if len(segments) == 0:
-        raise RuntimeError("Empty text_embedding.segments returned from TwelveLabs")
-
-    # Use the first segment as the query embedding
-    return segments[0].float_
+    model = MultiModalEmbeddingModel.from_pretrained("multimodalembedding@001")
+    embeddings = model.get_embeddings(
+        contextual_text=text_query,
+        dimension=EMBEDDING_DIMENSION,
+    )
+    if embeddings.text_embedding is None:
+        raise RuntimeError("No text_embedding returned from Vertex AI multimodal model")
+    vec = embeddings.text_embedding
+    return list(vec) if hasattr(vec, "__iter__") and not isinstance(vec, str) else vec
 
 
 # --------- TIME DECAY & FINAL SCORE ---------
@@ -113,7 +130,7 @@ def normalize_scores(values: List[float]) -> List[float]:
 
 def retrieve_and_rank(
     question: str,
-    index_name: str = "twelve-labs",
+    index_name: str = "memobot-memories",
     top_k: int = 10,
     alpha: float = 0.5,   # relevance weight
     beta: float = 0.3,    # importance weight
@@ -121,7 +138,7 @@ def retrieve_and_rank(
     person_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
-    1) Embed the question using TwelveLabs.
+    1) Embed the question using Vertex AI multimodal (text).
     2) Query Pinecone for similar embeddings (optionally filtered by person_id).
     3) Combine:
        - relevance (Pinecone score)
@@ -210,15 +227,16 @@ def retrieve_and_rank(
     # 6. Sort by final_score descending
     results.sort(key=lambda x: x["final_score"], reverse=True)
 
-    # 7. Deduplicate by pegasus_video_id: keep only the best-scoring entry per video
-    seen_pegasus_video_ids = set()
+    # 7. Deduplicate by video_file + start_time_sec: keep only the best-scoring entry per segment
+    seen = set()
     deduped = []
     for r in results:
-        vid = (r.get("metadata") or {}).get("pegasus_video_id")
-        if vid is None or vid not in seen_pegasus_video_ids:
+        md = r.get("metadata") or {}
+        key = (md.get("video_file"), md.get("start_time_sec"))
+        if key not in seen:
             deduped.append(r)
-            if vid is not None:
-                seen_pegasus_video_ids.add(vid)
+            if key[0] is not None:
+                seen.add(key)
     return deduped[:top_k]
 
 
@@ -250,14 +268,16 @@ def pretty_print_results(question: str, results: List[Dict[str, Any]], max_print
 
 
 if __name__ == "__main__":
+    import argparse
     import sys
 
-    if len(sys.argv) > 1:
-        question = " ".join(sys.argv[1:])
-    else:
-        question = input("Enter your question: ")
+    parser = argparse.ArgumentParser(description="Query video memories (Pinecone + Vertex AI).")
+    parser.add_argument("--person-id", type=str, default=None, help="Person ID for filtering memories (required for results).")
+    parser.add_argument("question", nargs="*", help="Question to search for (or leave empty to be prompted).")
+    args = parser.parse_args()
 
-    results = retrieve_and_rank(question)
+    question = " ".join(args.question).strip() if args.question else input("Enter your question: ")
+    results = retrieve_and_rank(question, person_id=args.person_id)
     if not results:
         print("No matches found.")
     else:

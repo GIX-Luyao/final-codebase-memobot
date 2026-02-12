@@ -37,6 +37,7 @@ l2_normalize = match_face.l2_normalize
 load_db_cache = match_face.load_db_cache
 build_db_cache = match_face.build_db_cache
 list_images = match_face.list_images
+UUID_STEM_PATTERN = match_face.UUID_STEM_PATTERN
 
 from utils.database import init_database, add_person, get_person_by_name
 
@@ -157,9 +158,10 @@ def update_face_embedding_cache(face_id: str, image_path: Path) -> bool:
         # Ensure cache directory exists
         FACE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         
-        db_images = list_images(FACE_DATABASE_DIR)
+        all_images = list_images(FACE_DATABASE_DIR)
+        db_images = [p for p in all_images if UUID_STEM_PATTERN.match(p.stem)]
         if not db_images:
-            print(f"  [Warning] No images found in face_database, cannot build cache")
+            print(f"  [Warning] No enrolled (UUID-named) images in face_database, cannot build cache")
             return False
         
         db_map = build_db_cache(

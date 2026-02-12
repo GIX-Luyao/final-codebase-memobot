@@ -29,7 +29,7 @@ try:
     from vector_db import (
         ingest_data,
         run_embeddings_only,
-        run_pegasus_caption_only,
+        run_gemini_video_understanding,
         merge_and_upsert,
     )
 except ImportError as e:
@@ -46,7 +46,7 @@ except Exception as e:
     print(f"[Error] Failed to import MemobotService: {e}")
     exit(1)
 
-DEFAULT_INDEX_NAME = "twelve-labs"
+DEFAULT_INDEX_NAME = "memobot-memories"
 DEFAULT_CLIP_LENGTH = 30
 DEFAULT_MEMOBOT_GROUP_ID = os.getenv("MEMOBOT_GROUP_ID", "tenant_003")
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
@@ -78,9 +78,9 @@ async def _process_one_video(
     loop = asyncio.get_event_loop()
     timings: dict[str, float] = {}
 
-    # --- Run in parallel: (1) Diarization+TalkNet+DeepFace  ||  (2) Memory builder (embeddings || caption) ---
+    # --- Run in parallel: (1) Diarization+TalkNet+DeepFace  ||  (2) Memory builder (embeddings + Gemini) ---
     print("\n" + "=" * 60)
-    print("Parallel: Diarization+TalkNet+DeepFace  ||  Memory builder (Embeddings || Pegasus caption)")
+    print("Parallel: Diarization+TalkNet+DeepFace  ||  Memory builder (Embeddings + Gemini video understanding)")
     print("=" * 60)
 
     t_total_start = time.perf_counter()
@@ -93,9 +93,9 @@ async def _process_one_video(
         None,
         lambda: run_embeddings_only(video_path_str, index_name, clip_length),
     )
-    pegasus_future = loop.run_in_executor(
+    gemini_future = loop.run_in_executor(
         None,
-        lambda: run_pegasus_caption_only(video_path_str, clip_length),
+        lambda: run_gemini_video_understanding(video_path_str, clip_length),
     )
 
     results, intermediate_dir, full_audio_dialogue = await process_video_future
@@ -103,12 +103,12 @@ async def _process_one_video(
     print(f"[Timing] Branch A (Diarization+TalkNet+DeepFace) completed in {timings['branch_a_s']:.2f}s")
 
     embeddings_result = await embeddings_future
-    pegasus_result = await pegasus_future
+    gemini_result = await gemini_future
     timings["branch_b_s"] = time.perf_counter() - t_total_start
-    print(f"[Timing] Branch B (Memory builder: Embeddings + Pegasus caption) completed in {timings['branch_b_s']:.2f}s")
+    print(f"[Timing] Branch B (Memory builder: Embeddings + Gemini) completed in {timings['branch_b_s']:.2f}s")
 
     print(f"[Diarization+TalkNet+DeepFace] Processed {len(results)} speaker turns.")
-    print("[Memory builder] Embeddings and Pegasus caption completed.")
+    print("[Memory builder] Embeddings and Gemini video understanding completed.")
 
     # --- Merge and upsert (uses process_video results for person_ids / audio_dialogue) ---
     print("\n" + "=" * 60)
@@ -121,16 +121,65 @@ async def _process_one_video(
         index_name=index_name,
         clip_length=clip_length,
         embeddings_result=embeddings_result,
-        pegasus_result=pegasus_result,
         process_video_results=results,
         memobot_group_id=memobot_group_id,
         full_audio_dialogue=full_audio_dialogue,
+        gemini_result=gemini_result,
     )
     timings["merge_s"] = time.perf_counter() - t_merge_start
     timings["total_s"] = time.perf_counter() - t_total_start
     print(f"[Timing] Merge took {timings['merge_s']:.2f}s | Total (parallel + merge) {timings['total_s']:.2f}s")
 
     return ingest_result, timings
+
+
+async def _process_one_video_branch_b_only(
+    video_path: Path,
+    video_filename: str,
+    index_name: str,
+    clip_length: int,
+) -> tuple[dict, dict]:
+    """Run only embedding + Gemini video understanding (no diarization, no merge/upsert). Returns (combined_result, timings)."""
+    video_path_str = str(video_path.resolve())
+    loop = asyncio.get_event_loop()
+    timings: dict[str, float] = {}
+    t_start = time.perf_counter()
+
+    print("\n" + "=" * 60)
+    print("Branch B only: Embeddings (Vertex AI) + Gemini video understanding")
+    print("=" * 60)
+
+    embeddings_future = loop.run_in_executor(
+        None,
+        lambda: run_embeddings_only(video_path_str, index_name, clip_length),
+    )
+    gemini_future = loop.run_in_executor(
+        None,
+        lambda: run_gemini_video_understanding(video_path_str, clip_length),
+    )
+    embeddings_result = None
+    gemini_result = {}
+    try:
+        embeddings_result = await embeddings_future
+    except Exception as e:
+        print(f"[Branch B] Embeddings failed (e.g. Vertex auth): {e}")
+    try:
+        gemini_result = await gemini_future
+    except Exception as e:
+        print(f"[Branch B] Gemini video understanding failed: {e}")
+    timings["branch_b_s"] = time.perf_counter() - t_start
+    timings["total_s"] = timings["branch_b_s"]
+    timings["merge_s"] = 0.0
+    timings["branch_a_s"] = 0.0
+    print(f"[Timing] Branch B completed in {timings['branch_b_s']:.2f}s")
+
+    # Return a minimal combined result (no Pinecone upsert)
+    combined = {
+        "embeddings_result": embeddings_result,
+        "gemini_result": gemini_result,
+        "summary": (gemini_result or {}).get("summary", ""),
+    }
+    return combined, timings
 
 
 async def ingest_to_graph(final_outputs: list[dict], memobot_service: MemobotService):
@@ -179,6 +228,11 @@ async def main_async():
         except Exception as e:
             print(f"[Warning] Failed to initialize MemobotService: {e}")
 
+    # Optional: run only embedding + Gemini video understanding (no diarization, no merge/upsert)
+    branch_b_only = "--branch-b-only" in sys.argv or "--embeddings-only" in sys.argv
+    if branch_b_only:
+        sys.argv = [a for a in sys.argv if a not in ("--branch-b-only", "--embeddings-only")]
+
     # Determine Videos
     if len(sys.argv) >= 2:
         video_arg = sys.argv[1]
@@ -214,30 +268,42 @@ async def main_async():
     final_outputs: list[dict] = []
     all_timings: list[dict] = []
 
+    if branch_b_only:
+        print("[Mode] Branch B only: Embeddings + Gemini video understanding (no diarization, no Pinecone upsert)\n")
+
     # --- Main Loop ---
     for video_path, video_filename in videos_to_process:
         print(f"\n>>> Processing Video: {video_path.name}")
 
         try:
-            ingest_result, timings = await _process_one_video(
-                video_path, video_filename, index_name, clip_length,
-                memobot_service, DEFAULT_MEMOBOT_GROUP_ID
-            )
-            all_timings.append({"video": video_path.name, **timings})
+            if branch_b_only:
+                ingest_result, timings = await _process_one_video_branch_b_only(
+                    video_path, video_filename, index_name, clip_length,
+                )
+                all_timings.append({"video": video_path.name, **timings})
+                # Optionally print Gemini summary for this video
+                if ingest_result.get("gemini_result"):
+                    print(f"[Gemini summary] {ingest_result.get('summary', '')[:200]}...")
+            else:
+                ingest_result, timings = await _process_one_video(
+                    video_path, video_filename, index_name, clip_length,
+                    memobot_service, DEFAULT_MEMOBOT_GROUP_ID
+                )
+                all_timings.append({"video": video_path.name, **timings})
 
-            # Extract Results (audio_dialogue = robot + person_id only; person_ids = all users who talked)
-            clip_summary = ingest_result.get("summary")
-            audio_dialogue = ingest_result.get("audio_dialogue")
-            person_ids = ingest_result.get("person_ids") or []
-            for p in ingest_result.get("persons", []) or []:
-                if p.get("person_id") and p.get("name"):
-                    final_outputs.append({
-                        "person_id": p.get("person_id"),
-                        "name": p.get("name"),
-                        "clip_summary": clip_summary,
-                        "audio_dialogue": audio_dialogue,
-                        "person_ids": person_ids,
-                    })
+                # Extract Results (audio_dialogue = robot + person_id only; person_ids = all users who talked)
+                clip_summary = ingest_result.get("summary")
+                audio_dialogue = ingest_result.get("audio_dialogue")
+                person_ids = ingest_result.get("person_ids") or []
+                for p in ingest_result.get("persons", []) or []:
+                    if p.get("person_id") and p.get("name"):
+                        final_outputs.append({
+                            "person_id": p.get("person_id"),
+                            "name": p.get("name"),
+                            "clip_summary": clip_summary,
+                            "audio_dialogue": audio_dialogue,
+                            "person_ids": person_ids,
+                        })
         except Exception as e:
             print(f"[ERROR] Failed processing {video_filename}: {e}")
             continue
