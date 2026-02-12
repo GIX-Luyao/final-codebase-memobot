@@ -43,7 +43,7 @@ pgvector==0.2.4
 neo4j>=5.14.0,<7
 
 # ---------- Graph / Memory ----------
-graphiti-core @ git+https://github.com/Cathy-ZYX119/graphiti.git@cedc7a08600d5573cd2b2b7fcaa796f5876240ba
+graphiti-core @ git+https://github.com/Cathy-ZYX119/graphiti.git@robot_graph
 diskcache==5.6.3
 
 # ---------- Background Jobs ----------
