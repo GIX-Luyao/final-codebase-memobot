@@ -10,6 +10,11 @@ import numpy as np
 import cv2
 import torch
 import google.generativeai as genai
+from dotenv import load_dotenv
+import os
+
+
+
 
 # --- CONFIGURATION ---
 HOST = "0.0.0.0"
@@ -23,6 +28,7 @@ VAD_THRESHOLD = 0.5
 SILENCE_DURATION_LIMIT = 1.0  # Seconds of silence to trigger generation
 
 # Gemini Setup
+load_dotenv(override=True)
 genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
 model = genai.GenerativeModel('gemini-1.5-flash') 
 
