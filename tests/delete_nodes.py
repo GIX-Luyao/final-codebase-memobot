@@ -98,9 +98,10 @@ async def _delete_for_group(driver: Any, group_id: str) -> None:
 
 async def main_async() -> int:
     parser = argparse.ArgumentParser(
-        description="Delete all nodes/edges for a group_id from Neo4j (Graphiti)."
+        description="Delete nodes/edges for a group_id or specific node UUID from Neo4j (Graphiti)."
     )
     parser.add_argument("--group-id", required=True, help="Graph partition id (group_id) to delete")
+    parser.add_argument("--node-uuid", help="Specific node UUID to delete (and its relationships)")
     parser.add_argument("--dry-run", action="store_true", help="Only print counts; do not delete")
     parser.add_argument("--yes", action="store_true", help="Actually perform deletion")
     args = parser.parse_args()
@@ -149,18 +150,48 @@ async def main_async() -> int:
         # Use the underlying Graphiti driver (Neo4j) for direct cleanup queries.
         driver = service._builder.client.driver  # type: ignore[attr-defined]
 
-        nodes, rels = await _count_for_group(driver, args.group_id)
-        print(f"[Info] group_id={args.group_id} nodes={nodes} relationships={rels}")
+        if args.node_uuid:
+            # Delete specific node
+            print(f"[Info] Target: Node UUID={args.node_uuid} in group_id={args.group_id}")
+            
+            # Check if node exists
+            check_res, _, _ = await driver.execute_query(
+                "MATCH (n {uuid: $uuid, group_id: $group_id}) RETURN n.name as name",
+                params={"uuid": args.node_uuid, "group_id": args.group_id},
+                routing_="r"
+            )
+            
+            if not check_res:
+                print(f"[Error] Node {args.node_uuid} not found in group {args.group_id}")
+                return 1
+            
+            node_name = check_res[0]["name"]
+            print(f"[Info] Found node: {node_name!r}")
 
-        if args.dry_run or not args.yes:
-            if not args.yes:
-                print("[Info] Not deleting (pass --yes to delete, or --dry-run to just inspect).")
-            return 0
+            if args.dry_run or not args.yes:
+                print("[Info] Dry-run: would delete this node and all its relationships.")
+                return 0
 
-        await _delete_for_group(driver, args.group_id)
+            await driver.execute_query(
+                "MATCH (n {uuid: $uuid, group_id: $group_id}) DETACH DELETE n",
+                params={"uuid": args.node_uuid, "group_id": args.group_id}
+            )
+            print(f"[OK] Node {args.node_uuid} deleted.")
+        else:
+            # Delete entire group
+            nodes, rels = await _count_for_group(driver, args.group_id)
+            print(f"[Info] Target: Entire group_id={args.group_id} (nodes={nodes}, relationships={rels})")
 
-        nodes_after, rels_after = await _count_for_group(driver, args.group_id)
-        print(f"[OK] Deleted. Remaining nodes={nodes_after} relationships={rels_after}")
+            if args.dry_run or not args.yes:
+                if not args.yes:
+                    print("[Info] Not deleting (pass --yes to delete, or --dry-run to just inspect).")
+                return 0
+
+            await _delete_for_group(driver, args.group_id)
+
+            nodes_after, rels_after = await _count_for_group(driver, args.group_id)
+            print(f"[OK] Deleted. Remaining nodes={nodes_after} relationships={rels_after}")
+            
         return 0
     finally:
         await service.close()
@@ -172,3 +203,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+#python3 tests/delete_nodes.py --group-id test_0203_for_midterm --node-uuid log_1770093617_ccad744a-17b9-4064-99db-855c87da4cf1 --yes
