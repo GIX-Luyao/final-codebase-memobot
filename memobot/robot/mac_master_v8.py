@@ -56,12 +56,13 @@ import memobot.robot.mac_master_v3 as original_server
 
 # --- GEMINI LIVE (Google) REALTIME AGENT ---
 try:
-    from memobot.query_pipeline.gemini_client import ServerRealtimeAgent as GeminiServerAgent
+    from memobot.query_pipeline.gemini_client import ServerRealtimeAgent as GeminiServerAgent, set_code_command_socket
 except ImportError:
     try:
-        from query_pipeline.gemini_client import ServerRealtimeAgent as GeminiServerAgent
+        from query_pipeline.gemini_client import ServerRealtimeAgent as GeminiServerAgent, set_code_command_socket
     except ImportError:
         GeminiServerAgent = None
+        set_code_command_socket = None
 
 # --- CONFIGURATION ---
 ROBOT_DIR = Path(__file__).resolve().parent
@@ -76,8 +77,8 @@ TALKNET_CROPS_DIR.mkdir(parents=True, exist_ok=True)
 FACE_DATABASE_DIR = REPO_ROOT / "face_database"
 
 MAX_RECOGNITION_DISTANCE = 0.5   # Below this: confident same person
-# Above this: best match is too far to be the same person → treat as new user and register
-MAX_DISTANCE_TO_ACCEPT_AS_SAME_PERSON = 0.65
+# Above this: best match is too far → treat as new user and register. Higher = stricter (fewer false new entries).
+MAX_DISTANCE_TO_ACCEPT_AS_SAME_PERSON = 0.82
 NETWORK_LATENCY_DELAY = 0.25
 
 # VAD-driven recognition
@@ -89,6 +90,12 @@ USER_AUDIO_HOLD_AFTER_SPEECH_START = 0.5
 
 # Set in main() from --ingest: when True, run ingest pipeline after each 30s clip
 INGEST_MEMORIES = False
+
+# Code command channel: mock/robot client connects here to receive executed code (length-prefixed)
+PORT_CODE_TX = 50009
+
+# DSP: fan noise reduction (bandpass from v3) + mic sensitivity for distant speech
+MIC_INPUT_GAIN = 4.0  # Boost mic level (v3 uses 3.0); higher helps hear people further away
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -418,7 +425,7 @@ def recognize_user_from_frame(frame):
 # --- PATCHED NETWORKING ---
 
 def patched_receive_audio_from_robot():
-    """Reads audio from socket in a loop; feeds recorder, runs VAD on user mic, requests recognition on speech start."""
+    """Reads audio from socket in a loop; applies fan noise reduction (bandpass) + mic gain; feeds recorder, VAD, API."""
     global _last_recognition_request_time, _user_audio_hold_until
 
     print(f"[Audio RX] Listening on {original_server.PORT_AUDIO_RX}...")
@@ -426,6 +433,16 @@ def patched_receive_audio_from_robot():
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((original_server.HOST, original_server.PORT_AUDIO_RX))
     sock.listen(1)
+
+    # Fan noise reduction: bandpass 300Hz–4kHz (removes NAO fan rumble + hiss). Uses v3's RealtimeFilter.
+    noise_filter = original_server.RealtimeFilter(
+        original_server.FILTER_LOW_CUT,
+        original_server.FILTER_HIGH_CUT,
+        original_server.ROBOT_RATE,
+    )
+    if getattr(noise_filter, "enabled", False):
+        print("[Audio RX] Fan noise filter enabled (bandpass 300–4000 Hz).")
+    print(f"[Audio RX] Mic input gain: {MIC_INPUT_GAIN}x (for distant speech).")
 
     vad_model = None
     if SILERO_VAD_AVAILABLE:
@@ -444,6 +461,11 @@ def patched_receive_audio_from_robot():
             data = conn.recv(4096)
             if not data:
                 break
+
+            # 1. Fan noise reduction (bandpass)
+            data = noise_filter.process(data)
+            # 2. Mic sensitivity boost for distant speakers
+            data = original_server.apply_gain(data, MIC_INPUT_GAIN)
 
             recorder.add_audio(data)
             
@@ -520,6 +542,39 @@ def patched_send_audio_to_robot():
         conn.close()
         sock.close()
 
+
+def thread_code_command_channel():
+    """Listen on PORT_CODE_TX (50009). When mock/robot client connects, register socket so executeCode can send code."""
+    if set_code_command_socket is None:
+        return
+    while True:
+        try:
+            server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server_sock.bind((original_server.HOST, PORT_CODE_TX))
+            server_sock.listen(1)
+            print(f"[Code TX] Listening on {PORT_CODE_TX} (executed code channel)...")
+            conn, addr = server_sock.accept()
+            print(f"[Code TX] Client connected: {addr}")
+            set_code_command_socket(conn)
+            try:
+                while True:
+                    if conn.recv(4096) == b"":
+                        break
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                set_code_command_socket(None)
+                conn.close()
+            server_sock.close()
+        except Exception as e:
+            print(f"[Code TX] Error: {e}")
+            try:
+                server_sock.close()
+            except Exception:
+                pass
+
+
 # --- MAIN ---
 
 async def main():
@@ -540,6 +595,8 @@ async def main():
     # Start Audio Threads
     threading.Thread(target=patched_receive_audio_from_robot, daemon=True).start()
     threading.Thread(target=patched_send_audio_to_robot, daemon=True).start()
+    # Code command channel: mock/robot client connects to receive executed code
+    threading.Thread(target=thread_code_command_channel, daemon=True).start()
 
     # Video Setup
     v_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
