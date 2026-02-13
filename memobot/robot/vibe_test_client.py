@@ -8,6 +8,31 @@ import threading
 import subprocess
 import argparse
 import time
+<<<<<<< HEAD
+import traceback
+from StringIO import StringIO
+import numpy as np
+import cv2
+
+# Naoqi modules
+from naoqi import ALProxy, ALBroker, ALModule
+import vision_definitions
+
+# --- CONFIGURATION ---
+CHUNK_SIZE = 4096
+# Persistent globals dictionary to maintain state between voice commands
+# (e.g. if one command defines 'tts', the next command can use 'tts')
+EXEC_GLOBALS = {}
+
+# --- HELPER: SEND FEEDBACK ---
+def send_feedback(server_ip, port, message):
+    """Sends logs, errors, or success messages back to the server."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((server_ip, port))
+        
+        # Protocol: [Length (4 bytes)] [Payload]
+=======
 import os
 import signal
 import numpy as np
@@ -30,6 +55,7 @@ def send_feedback(server_ip, port, message):
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect((server_ip, port))
+>>>>>>> 4739e9ef542ac4ee6788f75eea5d462a5ef2b464
         payload = str(message)
         header = struct.pack(">L", len(payload))
         s.sendall(header + payload)

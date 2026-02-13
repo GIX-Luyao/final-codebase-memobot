@@ -3,13 +3,13 @@
 # =========================
 
 # ---------- FastAPI / Server ----------
-fastapi==0.104.1
+fastapi==0.115.6
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 aiofiles==23.2.1
 
 # ---------- HTTP / Networking ----------
-httpx==0.25.2
+httpx==0.28.1
 requests>=2.32.3,<3
 
 # ---------- WebSocket ----------
@@ -67,7 +67,7 @@ pinecone-plugin-interface>=0.0.7,<1
 # ---------- Video / AI APIs ----------
 # Google Vertex AI + Gemini (embeddings + video understanding)
 google-cloud-aiplatform
-google-genai
+google-genai==1.59.0
 
 # ---------- CV / Audio / Video ----------
 opencv-python>=4.8,<5
@@ -102,6 +102,3 @@ torch
 
 # Google Vertex AI (multimodal embeddings for ingest pipeline)
 google-cloud-aiplatform
-
-# Gemini API (video understanding for ingest pipeline)
-google-genai

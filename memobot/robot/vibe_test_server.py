@@ -14,11 +14,6 @@ import numpy as np
 import torch
 <<<<<<< HEAD
 import google.generativeai as genai
-from dotenv import load_dotenv
-import os
-
-
-
 =======
 from dotenv import load_dotenv
 from google import genai
@@ -46,7 +41,6 @@ SILENCE_DURATION_LIMIT = 1.0
 
 <<<<<<< HEAD
 # Gemini Setup
-load_dotenv(override=True)
 genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
 model = genai.GenerativeModel('gemini-1.5-flash') 
 =======
