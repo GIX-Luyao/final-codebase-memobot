@@ -78,8 +78,10 @@ FACE_DATABASE_DIR = REPO_ROOT / "face_database"
 
 MAX_RECOGNITION_DISTANCE = 0.5   # Below this: confident same person
 # Above this: best match is too far → treat as new user and register. Higher = stricter (fewer false new entries).
-MAX_DISTANCE_TO_ACCEPT_AS_SAME_PERSON = 0.82
+MAX_DISTANCE_TO_ACCEPT_AS_SAME_PERSON = 0.6
 NETWORK_LATENCY_DELAY = 0.25
+# Minimum face size (width/height in px) to accept when saving to face_database; avoids saving non-face or tiny detections.
+MIN_FACE_SIZE_FOR_ENROLL = 60
 
 # VAD-driven recognition
 VAD_CHUNK_SAMPLES = 512   # 32ms at 16kHz (Silero recommends 30ms+)
@@ -332,9 +334,14 @@ def _int16_to_float32(audio_int16):
 def register_unknown_user(frame):
     """Assign a new Person ID, add to persons.db, then save face image so they are recognized next time.
     persons.db is always updated whenever a new face identity is added.
-    Does nothing and returns None if the frame contains no detectable face (avoids saving empty/bad crops)."""
-    if not detect_faces_fast(frame):
+    Does nothing and returns None if the frame contains no detectable face of sufficient size (avoids saving empty/bad crops)."""
+    faces = detect_faces_fast(frame)
+    if not faces:
         print("[Recognition] No face detected in frame; not saving to face_database.")
+        return None
+    valid_faces = [f for f in faces if f.get("w", 0) >= MIN_FACE_SIZE_FOR_ENROLL and f.get("h", 0) >= MIN_FACE_SIZE_FOR_ENROLL]
+    if not valid_faces:
+        print("[Recognition] No face large enough detected in frame; not saving to face_database.")
         return None
     face_id = str(uuid.uuid4())
     name = f"Guest_{face_id[:8]}"
@@ -411,10 +418,10 @@ def recognize_user_from_frame(frame):
                 # Best match is too far: likely a different person (new user). Register.
                 print(f"[Recognition] Distance {dist:.4f} > {MAX_DISTANCE_TO_ACCEPT_AS_SAME_PERSON}; treating as new user.")
                 return {"unknown": True}
-            # In between: uncertain (same person with bad crop). Use as current speaker, do NOT register.
-            print(f"[Recognition] Low confidence ({dist:.4f}). Using as current speaker, not registering as new user.")
+            # In between: uncertain (same person with bad crop). Do NOT register and do NOT update current speaker.
+            print(f"[Recognition] Low confidence ({dist:.4f}). Ignoring this detection (keeping current speaker).")
             cv2.imwrite(str(RECOGNIZED_USER_FRAMES_DIR / f"{ts}_{name}_low_conf.png"), frame)
-            return person
+            return {"low_confidence": True, "distance": dist}
         cv2.imwrite(str(RECOGNIZED_USER_FRAMES_DIR / f"{ts}_{name}.png"), frame)
         return person
     except Exception as e:
@@ -582,7 +589,7 @@ async def main():
     
     # Mode Setup
     import os
-    global INGEST_MEMORIES
+    global INGEST_MEMORIES, _current_speaker
     INGEST_MEMORIES = "--ingest" in sys.argv
     if "--realtime" in sys.argv:
         original_server.use_realtime = True
@@ -669,7 +676,7 @@ async def main():
                             
                             active_speaker_crop = frame_copy[cy1:cy2, cx1:cx2]
                             
-                            # Save TalkNet crop for debugging only (not in face_database; that is for enrolled identities only)
+                            # Only save crop when we have an active speaker (red box)
                             if active_speaker_crop.size > 0:
                                 try:
                                     ts_crop = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -678,11 +685,12 @@ async def main():
                                     print(f"[TalkNet] Saved crop to {crop_output_path}")
                                 except Exception as e:
                                     print(f"[TalkNet] Failed to save crop: {e}")
-
-                            print(f"[TalkNet] Active speaker found at {active_bbox}. Cropped for ID.")
-                            used_optimized_pipeline = True
+                                print(f"[TalkNet] Active speaker found at {active_bbox}. Cropped for ID.")
+                                used_optimized_pipeline = True
                         else:
-                            print("[TalkNet] Faces detected but no active speaker (lips not moving?).")
+                            # No active speaker (no red box): do not crop, do not run recognition this turn
+                            print("[TalkNet] No active speaker detected; skipping crop and recognition.")
+                            return
                 except Exception as e:
                     print(f"[TalkNet] Error in pipeline: {e}")
         
@@ -723,13 +731,17 @@ async def main():
             #    _current_speaker = None
             return
 
+        if isinstance(result, dict) and result.get("low_confidence"):
+            # Low-confidence match: do NOT update current speaker or notify the Live API.
+            return
+
         if isinstance(result, dict) and result.get("unknown"):
             # Only register when recognizer found no match in DB (truly new person). Low-confidence
-            # matches are handled above by returning the person without {"unknown": True}.
+            # matches are handled above by returning early.
             person = register_unknown_user(target_image)
             with _current_speaker_lock:
                 _current_speaker = (
-                    {"person_id": person["person_id"], "name": person["name"]}
+                    {"person_id": person["person_id"], "name": person["name"], "is_new_user": True}
                     if person is not None
                     else None
                 )
@@ -774,10 +786,17 @@ async def main():
             name_for_api = speaker.get("name") if speaker else None
             if name_for_api != _last_speaker_sent_to_api:
                 person_id = speaker.get("person_id") if speaker else None
-                print(f"[Person Record]: person_id: {person_id}, name: {name_for_api or 'Unknown'}")
+                is_new_user = speaker.get("is_new_user", False) if speaker else False
+                print(f"[Person Record]: person_id: {person_id}, name: {name_for_api or 'Unknown'}" + (" (new user)" if is_new_user else ""))
                 if original_server.use_realtime and original_server.agent_instance and getattr(original_server.agent_instance, "session_connected", False):
-                    await original_server.agent_instance.update_speaker_identity(name_for_api, person_id=person_id)
+                    print(f"[Live API] Sending speaker identity to Gemini: name={name_for_api!r}, person_id={person_id!r}, is_new_user={is_new_user}")
+                    await original_server.agent_instance.update_speaker_identity(name_for_api, person_id=person_id, is_new_user=is_new_user)
                 _last_speaker_sent_to_api = name_for_api
+                # Clear is_new_user after notifying API so we don't repeat "new user" on next loop
+                if is_new_user and speaker:
+                    with _current_speaker_lock:
+                        if _current_speaker and _current_speaker.get("name") == name_for_api:
+                            _current_speaker = {**_current_speaker, "is_new_user": False}
 
             # Video Loop
             packed = original_server.recv_exact(conn, payload_size)

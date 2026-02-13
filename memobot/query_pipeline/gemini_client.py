@@ -131,11 +131,12 @@ BASE_INSTRUCTIONS = (
     "You are Mnemo, a NAO V4 robot (Aldebaran/SoftBank). You have a voice and a body; you can move, gesture, and run code on the robot.\n\n"
     "LANGUAGE: Speak in English, Chinese (中文), or Indonesian (Bahasa Indonesia) as appropriate—match the user's language or use English by default. Keep replies short.\n\n"
     "TOOLS — use them when relevant:\n"
-    "• retrieveMemory: Call when the user asks about the past, preferences, people, or anything that might be in memory. Do not answer from memory without calling it. Do not guess.\n"
+    "• retrieveMemory: Call when the user asks about the past, preferences, people, or anything that might be in memory. Do not answer from memory without calling it. Do not guess. Do NOT call retrieveMemory for identity questions like 'who am I', 'what is my name', 'what's my name'—answer from the current speaker context (you are told who is speaking).\n"
     "• searchRobotActions: Call when the user wants to know what actions you can do (e.g. movements, gestures, speech) or when you need to look up available robot actions by keyword or category.\n"
     "• writeCode: Call when the user wants you to do something programmable on the robot (e.g. dance, wave, walk, say something specific, perform a sequence). Provide a clear coding_prompt describing the behavior. Code is generated for NAO (Python/naoqi).\n"
     "• executeCode: Call only after writeCode has been used. When the user says to run, execute, or perform the code (e.g. 'run it', 'execute', 'do it'), call executeCode to send the last generated code to the robot. Do not call executeCode before writeCode.\n"
-    "• saveCode: Call when the user explicitly asks to save the code to a file; provide code and filename.\n\n"
+    "• saveCode: Call when the user explicitly asks to save the code to a file; provide code and filename.\n"
+    "• updateMyName: Call when the user says their name (e.g. 'My name is Jason', 'Call me Sarah'). Updates the current speaker's name in the database. Use the name they give.\n\n"
     "RULES: Do not make up facts. Be concise. If unsure, say so."
 )
 
@@ -148,7 +149,7 @@ def _get_retrieve_memory_tool():
         function_declarations=[
             FunctionDeclaration(
                 name="retrieveMemory",
-                description="Retrieve past memories based on a natural language query.",
+                description="Retrieve past memories based on a natural language query. Do not use for identity questions (e.g. who am I, what is my name)—use the current speaker context instead.",
                 parameters=Schema(
                     type=SchemaType.OBJECT,
                     properties={
@@ -244,6 +245,20 @@ def _get_extra_tools():
                         ),
                     },
                     required=["code", "filename"],
+                ),
+            ),
+            FunctionDeclaration(
+                name="updateMyName",
+                description="Update the current speaker's name in the database. Call when the user says their name (e.g. 'My name is Jason', 'Call me Sarah').",
+                parameters=Schema(
+                    type=SchemaType.OBJECT,
+                    properties={
+                        "name": Schema(
+                            type=SchemaType.STRING,
+                            description="The name the user wants to be called (e.g. Jason, Sarah).",
+                        ),
+                    },
+                    required=["name"],
                 ),
             ),
         ]
@@ -489,7 +504,7 @@ class RealtimeAgent:
                     {
                         "function_declarations": [{
                             "name": "retrieveMemory",
-                            "description": "Retrieve past memories based on a natural language query.",
+                            "description": "Retrieve past memories based on a natural language query. Do not use for identity questions (e.g. who am I, what is my name)—use the current speaker context instead.",
                             "parameters": {
                                 "type": "OBJECT",
                                 "properties": {"queryText": {"type": "STRING", "description": "Natural language query."}},
@@ -503,6 +518,7 @@ class RealtimeAgent:
                             {"name": "writeCode", "description": "Write or generate code for NAO V4 robot.", "parameters": {"type": "OBJECT", "properties": {"coding_prompt": {"type": "STRING"}, "prompt": {"type": "STRING"}, "language": {"type": "STRING"}}, "required": []}},
                             {"name": "executeCode", "description": "Send last_code to robot via TCP. Requires code_status True (call writeCode first).", "parameters": {"type": "OBJECT", "properties": {"code": {"type": "STRING"}, "language": {"type": "STRING"}}, "required": []}},
                             {"name": "saveCode", "description": "Save code to a file.", "parameters": {"type": "OBJECT", "properties": {"code": {"type": "STRING"}, "filename": {"type": "STRING"}}, "required": ["code", "filename"]}},
+                            {"name": "updateMyName", "description": "Update the current speaker's name in the database. Call when the user says their name.", "parameters": {"type": "OBJECT", "properties": {"name": {"type": "STRING", "description": "The name the user wants to be called."}}, "required": ["name"]}},
                         ]
                     },
                 ],
@@ -584,7 +600,7 @@ class RealtimeAgent:
             print(f"[DEBUG] Function call: {name}, id={call_id}, args={args}")
             
             if name == "retrieveMemory":
-                query_text = args.get('queryText', '')
+                query_text = (args.get('queryText') or '').strip().lower()
                 result = await self.retrieve_memory(query_text)
                 func_response = types.FunctionResponse(
                     id=call_id,
@@ -672,6 +688,29 @@ class RealtimeAgent:
                     "message": "[placeholder] Code saved successfully",
                     "bytes_written": len(code.encode("utf-8")),
                 }
+                function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
+            elif name == "updateMyName":
+                new_name = (args.get("name") or "").strip()
+                if not new_name:
+                    result = {"updated": False, "message": "No name provided."}
+                elif not self.person_id:
+                    result = {"updated": False, "message": "No current speaker identified. Name can only be updated for a recognized speaker."}
+                else:
+                    try:
+                        try:
+                            from memobot.utils.database import update_person_name_by_person_id
+                        except ImportError:
+                            from utils.database import update_person_name_by_person_id
+                        updated = update_person_name_by_person_id(self.person_id, new_name)
+                        if updated:
+                            self.user_name = new_name
+                            result = {"updated": True, "name": new_name, "message": f"Name updated to {new_name} in the database."}
+                            print(f"[Database] updateMyName: person_id={self.person_id!r} -> name={new_name!r}")
+                        else:
+                            result = {"updated": False, "message": "No matching person found in the database."}
+                    except Exception as e:
+                        result = {"updated": False, "message": f"Database error: {e}"}
+                        print(f"[DEBUG] updateMyName error: {e}")
                 function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
         
         # Send all function responses at once
@@ -861,6 +900,7 @@ class ServerRealtimeAgent(RealtimeAgent):
         self.session_connected = False
         self.playback_end_time = 0.0
         self.state_lock = threading.Lock()
+        self._pending_identity_confirmation = False
 
     def is_robot_speaking(self):
         with self.state_lock:
@@ -893,31 +933,40 @@ class ServerRealtimeAgent(RealtimeAgent):
             except Exception:
                 pass
 
-    async def update_speaker_identity(self, user_name, person_id=None):
-        """Update current speaker for memory and context. Send via Live API with turn_complete=False so the AI does not respond."""
+    async def update_speaker_identity(self, user_name, person_id=None, is_new_user=False):
+        """
+        Update current speaker.
+        CRITICAL: We send with turn_complete=True so the model processes this immediately
+        and commits it to conversation history (required for "who am I?" to work).
+        """
         self.user_name = user_name
         self.person_id = person_id
         if not self.session or not self.session_connected:
+            print(f"[Live API] update_speaker_identity skipped: no session or not connected (user_name={user_name!r})")
             return
+
+        display_name = user_name if user_name else "Guest"
+        text = (
+            f"[SYSTEM EVENT: User changed. You are now talking to {display_name}. The active speaker is now {display_name}. Don't say anything."
+        )
+
         try:
-            text = (
-                f"The person speaking to you right now is {user_name}. Address only this person."
-                if user_name
-                else "The current speaker is a new user. Address only this person."
-            )
+            print(f"[Live API] Updating identity to '{display_name}' (turn_complete=True)...")
+            self._pending_identity_confirmation = True
             if hasattr(self.session, "send_client_content"):
-                # turn_complete=False: update context only; do not trigger a model reply.
                 if Content is not None and Part is not None:
                     turn_content = Content(role="user", parts=[Part(text=text)])
-                    await self.session.send_client_content(turns=turn_content, turn_complete=False)
+                    await self.session.send_client_content(turns=turn_content, turn_complete=True)
                 else:
                     await self.session.send_client_content(
-                        turns=[{"role": "user", "parts": [{"text": text}]}], turn_complete=False
+                        turns=[{"role": "user", "parts": [{"text": text}]}],
+                        turn_complete=True,
                     )
             else:
-                await self.session.send(input={"parts": [{"text": text}]})
+                await self.session.send(input=text, end_of_turn=True)
         except Exception as e:
-            print(f"[DEBUG] update_speaker_identity send error: {e}")
+            print(f"Error updating identity: {e}")
+            self._pending_identity_confirmation = False
 
     async def run(self):
         """Run Gemini Live session: no local audio init; feed mic via ingest_robot_audio; TTS -> audio_tx_queue."""
@@ -958,20 +1007,28 @@ class ServerRealtimeAgent(RealtimeAgent):
                             try:
                                 turn = self.session.receive()
                                 ai_text_started = False
+                                silence_this_turn = False  # Set when identity confirmation (short reply) so we don't speak it
                                 async for response in turn:
                                     if response.data:
-                                        # Gemini outputs 24kHz; robot expects 16kHz
-                                        audio_16k = _resample_audio(
-                                            response.data, RECEIVE_SAMPLE_RATE, ROBOT_SAMPLE_RATE
-                                        )
-                                        self._register_audio_payload(audio_16k)
-                                        if self.audio_tx_queue is not None:
-                                            self.audio_tx_queue.put(audio_16k)
+                                        if not silence_this_turn:
+                                            # Gemini outputs 24kHz; robot expects 16kHz
+                                            audio_16k = _resample_audio(
+                                                response.data, RECEIVE_SAMPLE_RATE, ROBOT_SAMPLE_RATE
+                                            )
+                                            self._register_audio_payload(audio_16k)
+                                            if self.audio_tx_queue is not None:
+                                                self.audio_tx_queue.put(audio_16k)
                                     if response.text:
-                                        if not ai_text_started:
-                                            print("\n🗣️ Gemini said: ", end="")
-                                            ai_text_started = True
-                                        print(response.text, end="")
+                                        # If this is the short "Hello X" identity confirmation, don't speak it
+                                        if getattr(self, "_pending_identity_confirmation", False) and len((response.text or "").strip()) < 50:
+                                            silence_this_turn = True
+                                            print(f"\n🤫 (Silenced identity confirmation): {response.text.strip()!r}")
+                                            self._pending_identity_confirmation = False
+                                        elif not silence_this_turn:
+                                            if not ai_text_started:
+                                                print("\n🗣️ Gemini said: ", end="")
+                                                ai_text_started = True
+                                            print(response.text, end="")
                                     server_content = response.server_content
                                     if server_content:
                                         if getattr(server_content, "input_transcription", None):
@@ -993,6 +1050,8 @@ class ServerRealtimeAgent(RealtimeAgent):
                                     if response.tool_call:
                                         await self.handle_tool_call(response.tool_call)
                                 # Turn ended
+                                if getattr(self, "_pending_identity_confirmation", False) and not silence_this_turn:
+                                    self._pending_identity_confirmation = False
                                 if ai_text_started:
                                     print()
                             except asyncio.CancelledError:

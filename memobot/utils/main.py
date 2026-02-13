@@ -40,6 +40,7 @@ list_images = match_face.list_images
 UUID_STEM_PATTERN = match_face.UUID_STEM_PATTERN
 
 from utils.database import init_database, add_person, get_person_by_name
+from utils.face_detection import image_contains_face, MIN_FACE_SIZE
 
 # Set Mac stability environment variables
 set_mac_stability_env(max_threads=1)
@@ -226,6 +227,12 @@ def process_new_users():
             print(f"  [Skip] Person with name '{name}' already exists in database")
             print(f"         Existing person_id: {existing['person_id']}")
             print(f"         Existing face_id: {existing['face_id']}")
+            skipped_count += 1
+            continue
+
+        # Only add images that contain a detectable face (avoid saving non-face images to face_database)
+        if not image_contains_face(image_path, min_face_size=MIN_FACE_SIZE):
+            print(f"  [Skip] No face detected in image (or face too small); not adding to face_database.")
             skipped_count += 1
             continue
         

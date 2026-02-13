@@ -167,6 +167,29 @@ def update_person_name_by_face_id(face_id: str, name: str) -> bool:
     return updated > 0
 
 
+def update_person_name_by_person_id(person_id: str, name: str) -> bool:
+    """
+    Update the name for a person by their person_id (e.g. current speaker).
+
+    Args:
+        person_id: The person_id (UUID) to update.
+        name: The new name.
+
+    Returns:
+        True if a row was updated, False if no matching row existed.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE persons SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE person_id = ?",
+        (name.strip(), person_id),
+    )
+    updated = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return updated > 0
+
+
 def delete_person_by_face_id(face_id: str) -> bool:
     """
     Delete a person by their face_id.
