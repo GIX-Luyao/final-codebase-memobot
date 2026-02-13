@@ -9,6 +9,11 @@ from collections import deque
 from dotenv import load_dotenv
 
 try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
     from google import genai
     from google.genai import types
     from google.genai.types import (
@@ -654,6 +659,194 @@ class RealtimeAgent:
             except:
                 pass
         print("\n👋 Connection closed.")
+
+
+def _resample_audio(audio_bytes: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """Resample audio bytes from src_rate to dst_rate (16-bit mono PCM)."""
+    if src_rate == dst_rate or np is None:
+        return audio_bytes
+    audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
+    src_len = len(audio_data)
+    dst_len = int(src_len * dst_rate / src_rate)
+    src_x = np.linspace(0, src_len, src_len)
+    dst_x = np.linspace(0, src_len, dst_len)
+    resampled = np.interp(dst_x, src_x, audio_data).astype(np.int16)
+    return resampled.tobytes()
+
+
+# Robot server: TTS playback padding for is_robot_speaking()
+PLAYBACK_PADDING = 0.5
+ROBOT_SAMPLE_RATE = 16000
+
+
+class ServerRealtimeAgent(RealtimeAgent):
+    """
+    Gemini Live agent for robot server: audio comes from robot mic (ingest_robot_audio),
+    TTS is pushed to a queue for the robot to play. No local mic/speaker.
+    """
+
+    def __init__(self, api_key=None, user_name=None, person_id=None, audio_tx_queue=None, loop=None):
+        super().__init__(api_key=api_key, user_name=user_name, person_id=person_id)
+        self.audio_tx_queue = audio_tx_queue if audio_tx_queue is not None else queue.Queue()
+        self.loop = loop
+        self.session_connected = False
+        self.playback_end_time = 0.0
+        self.state_lock = threading.Lock()
+
+    def is_robot_speaking(self):
+        with self.state_lock:
+            return time.time() < (self.playback_end_time + PLAYBACK_PADDING)
+
+    def _register_audio_payload(self, audio_bytes_16k: bytes):
+        duration = len(audio_bytes_16k) / (ROBOT_SAMPLE_RATE * 2)
+        current = time.time()
+        with self.state_lock:
+            if self.playback_end_time > current:
+                self.playback_end_time += duration
+            else:
+                self.playback_end_time = current + duration
+
+    def ingest_robot_audio(self, audio_bytes_16k: bytes):
+        """Push robot mic audio into the send queue so send_audio sends it to Gemini. Thread-safe."""
+        msg = {"data": audio_bytes_16k, "mime_type": "audio/pcm"}
+        if self.loop and self.audio_queue_mic is not None:
+            def _put():
+                try:
+                    self.audio_queue_mic.put_nowait(msg)
+                except asyncio.QueueFull:
+                    try:
+                        self.audio_queue_mic.get_nowait()
+                        self.audio_queue_mic.put_nowait(msg)
+                    except Exception:
+                        pass
+            try:
+                self.loop.call_soon_threadsafe(_put)
+            except Exception:
+                pass
+
+    async def update_speaker_identity(self, user_name, person_id=None):
+        """Update current speaker for memory and context. Optionally nudge the model with a text cue."""
+        self.user_name = user_name
+        self.person_id = person_id
+        if not self.session or not self.session_connected:
+            return
+        try:
+            text = (
+                f"The person speaking to you right now is {user_name}. Address only this person."
+                if user_name
+                else "The current speaker is a new user. Address only this person."
+            )
+            if Content and Part:
+                await self.session.send(input=Content(parts=[Part(text=text)]))
+        except Exception as e:
+            print(f"[DEBUG] update_speaker_identity send error: {e}")
+
+    async def run(self):
+        """Run Gemini Live session: no local audio init; feed mic via ingest_robot_audio; TTS -> audio_tx_queue."""
+        config = self._get_config()
+        _patch_live_setup_for_transcription()
+        _patch_live_parse_transcription()
+
+        try:
+            async with self.client.aio.live.connect(model=MODEL, config=config) as session:
+                self.session = session
+                self.session_connected = True
+                print("✅ Connected to Gemini Live API (robot server mode)!")
+                print("🎙️  Robot mic will be sent to Gemini; TTS will play on robot.\n")
+
+                async def send_audio():
+                    try:
+                        while True:
+                            msg = await self.audio_queue_mic.get()
+                            await self.session.send(input=msg)
+                    except asyncio.CancelledError:
+                        raise
+
+                async def receive_responses():
+                    try:
+                        while True:
+                            turn = self.session.receive()
+                            ai_text_started = False
+                            async for response in turn:
+                                if response.data:
+                                    # Gemini outputs 24kHz; robot expects 16kHz
+                                    audio_16k = _resample_audio(
+                                        response.data, RECEIVE_SAMPLE_RATE, ROBOT_SAMPLE_RATE
+                                    )
+                                    self._register_audio_payload(audio_16k)
+                                    if self.audio_tx_queue is not None:
+                                        self.audio_tx_queue.put(audio_16k)
+                                if response.text:
+                                    if not ai_text_started:
+                                        print("\n🗣️ Gemini said: ", end="")
+                                        ai_text_started = True
+                                    print(response.text, end="")
+                                server_content = response.server_content
+                                if server_content:
+                                    if getattr(server_content, "input_transcription", None):
+                                        it = server_content.input_transcription
+                                        text = it.get("text", it) if isinstance(it, dict) else getattr(it, "text", it)
+                                        if text:
+                                            print(f"\n👤 You said: {text}")
+                                    if getattr(server_content, "output_transcription", None):
+                                        ot = server_content.output_transcription
+                                        text = ot.get("text", ot) if isinstance(ot, dict) else getattr(ot, "text", ot)
+                                        if text and not ai_text_started:
+                                            print("\n🗣️ Gemini said: ", end="")
+                                            ai_text_started = True
+                                        if text:
+                                            print(text, end="")
+                                    if server_content.interrupted or server_content.turn_complete:
+                                        if ai_text_started:
+                                            print()
+                                if response.tool_call:
+                                    await self.handle_tool_call(response.tool_call)
+                            # Turn ended
+                            if ai_text_started:
+                                print()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        print(f"[ERROR] receive_responses: {e}")
+                        import traceback
+                        traceback.print_exc()
+
+                tasks = [
+                    asyncio.create_task(send_audio(), name="send"),
+                    asyncio.create_task(receive_responses(), name="receive"),
+                ]
+                try:
+                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                    for task in done:
+                        if task.exception():
+                            print(f"[ERROR] Task {task.get_name()} failed: {task.exception()}")
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[ERROR] ServerRealtimeAgent run: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self.session_connected = False
+            if self.memobot_service:
+                try:
+                    await self.memobot_service.close()
+                except Exception:
+                    pass
+            print("\n👋 Gemini Live (robot server) connection closed.")
+
+    async def cleanup(self):
+        """No local audio to clean up."""
+        if self.memobot_service:
+            try:
+                await self.memobot_service.close()
+            except Exception:
+                pass
 
 
 def _patch_live_setup_for_transcription():
