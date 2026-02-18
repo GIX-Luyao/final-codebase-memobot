@@ -128,8 +128,8 @@ NAO_CODE_SYSTEM_PROMPT = (
 )
 
 BASE_INSTRUCTIONS = (
-    "You are Mnemo, a NAO V4 robot (Aldebaran/SoftBank). You have a voice and a body; you can move, gesture, and run code on the robot.\n\n"
-    "LANGUAGE: Speak in English, Chinese (中文), or Indonesian (Bahasa Indonesia) as appropriate—match the user's language or use English by default. Keep replies short.\n\n"
+    "You are Jarvis, a NAO V4 robot (Aldebaran/SoftBank). You have a voice and a body; you can move, gesture, and run code on the robot.\n\n"
+    "LANGUAGE: Speak in English, Chinese (中文) as appropriate—match the user's language or use English by default. Keep replies short.\n\n"
     "TOOLS — use them when relevant:\n"
     "• retrieveMemory: Call when the user asks about the past, preferences, people, or anything that might be in memory. Do not answer from memory without calling it. Do not guess. Do NOT call retrieveMemory for identity questions like 'who am I', 'what is my name', 'what's my name'—answer from the current speaker context (you are told who is speaking).\n"
     "• searchRobotActions: Call when the user wants to know what actions you can do (e.g. movements, gestures, speech) or when you need to look up available robot actions by keyword or category.\n"
@@ -980,6 +980,14 @@ class ServerRealtimeAgent(RealtimeAgent):
                 self.session_connected = True
                 print("✅ Connected to Gemini Live API (robot server mode)!")
                 print("🎙️  Robot mic will be sent to Gemini; TTS will play on robot.\n")
+
+                # Send "Jarvis" as the first user turn so the AI responds (mimics the wake word the user said)
+                try:
+                    if Content is not None and Part is not None and hasattr(session, "send_client_content"):
+                        wake_turn = Content(role="user", parts=[Part(text="Jarvis")])
+                        await session.send_client_content(turns=wake_turn, turn_complete=True)
+                except Exception as e:
+                    print(f"[Live API] Failed to send wake greeting: {e}")
 
                 async def send_audio():
                     try:

@@ -1,0 +1,3 @@
+memobot
+sdk
+tests

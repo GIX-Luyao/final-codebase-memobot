@@ -4,6 +4,7 @@ Mock TCP client that streams Mac microphone and camera to mac_master_v4.
 Use this to test mac_master_v4 without a physical robot: it acts as the "robot"
 sending audio (mic) and video (webcam) to the server.
 """
+from __future__ import annotations
 
 import argparse
 import socket
@@ -44,6 +45,7 @@ def run_audio_client(
     """
     Stream Mac microphone to server (audio RX). 
     """
+    print("[Mic] Audio streaming active. Server uses Porcupine wake word (e.g. 'computer').")
     p = pyaudio.PyAudio()
     wav_file = None
     stream = None

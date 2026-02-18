@@ -97,8 +97,8 @@ pytest-asyncio==0.21.1
 backoff==2.2.1
 tenacity==9.1.2
 
-silero-vad 
+silero-vad
 torch
 
-# Google Vertex AI (multimodal embeddings for ingest pipeline)
-google-cloud-aiplatform
+# ---------- Wake word (mac_master_v9); free key at https://console.picovoice.ai/ ----------
+pvporcupine>=3.0.0

@@ -1,3 +1,73 @@
+Metadata-Version: 2.4
+Name: memobot
+Version: 0.1.0
+Summary: Add your description here
+Home-page: https://github.com/yourusername/memobot
+Author: MemoBot Team
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: aiofiles==23.2.1
+Requires-Dist: alembic==1.13.0
+Requires-Dist: annotated-types==0.7.0
+Requires-Dist: av<13,>=10
+Requires-Dist: backoff==2.2.1
+Requires-Dist: celery==5.3.4
+Requires-Dist: deepface>=0.0.79
+Requires-Dist: diskcache==5.6.3
+Requires-Dist: fastapi==0.104.1
+Requires-Dist: gdown>=5
+Requires-Dist: google-cloud-aiplatform>=1.115.0
+Requires-Dist: google-genai>=1.2.0
+Requires-Dist: graphiti-core
+Requires-Dist: httpx==0.25.2
+Requires-Dist: neo4j<7,>=5.14.0
+Requires-Dist: numpy<2,>=1.26.2
+Requires-Dist: openai<3,>=1.3.7
+Requires-Dist: opencv-python<5,>=4.8
+Requires-Dist: orjson<4,>=3.11.5
+Requires-Dist: packaging<26,>=24.2
+Requires-Dist: pandas<3,>=2
+Requires-Dist: passlib[bcrypt]==1.7.4
+Requires-Dist: pgvector==0.2.4
+Requires-Dist: pinecone<9,>=7
+Requires-Dist: pinecone-plugin-assistant==3.0.1
+Requires-Dist: pinecone-plugin-interface<1,>=0.0.7
+Requires-Dist: posthog==7.7.0
+Requires-Dist: prometheus-client==0.19.0
+Requires-Dist: psycopg2-binary==2.9.9
+Requires-Dist: pyannote-audio==3.3.2
+Requires-Dist: pyarrow==17.0.0
+Requires-Dist: pyaudio>=0.2.13
+Requires-Dist: pydantic==2.12.5
+Requires-Dist: pydantic-settings==2.1.0
+Requires-Dist: pytest==7.4.3
+Requires-Dist: pytest-asyncio==0.21.1
+Requires-Dist: python-dateutil<3,>=2.8.2
+Requires-Dist: python-dotenv<2,>=1.0.1
+Requires-Dist: python-jose[cryptography]==3.3.0
+Requires-Dist: python-multipart==0.0.6
+Requires-Dist: python-speech-features>=0.6
+Requires-Dist: redis==5.0.1
+Requires-Dist: requests<3,>=2.32.3
+Requires-Dist: scenedetect>=0.6
+Requires-Dist: sentence-transformers==2.2.2
+Requires-Dist: silero-vad>=6.2.0
+Requires-Dist: six==1.17.0
+Requires-Dist: sounddevice==0.5.5
+Requires-Dist: sqlalchemy==2.0.23
+Requires-Dist: tenacity==9.1.2
+Requires-Dist: tensorflow==2.19.0
+Requires-Dist: tensorflow-metal>=1.2.0; sys_platform == "darwin"
+Requires-Dist: tf-keras>=2.19.0
+Requires-Dist: torch>=2.10.0
+Requires-Dist: tqdm<5,>=4.67.1
+Requires-Dist: typing-extensions==4.15.0
+Requires-Dist: uvicorn[standard]==0.24.0
+Requires-Dist: websockets<17,>=12
+Dynamic: author
+Dynamic: home-page
+Dynamic: requires-python
+
 # MemoBot - Memory Layer for Robots
 
 Semantic memory storage and retrieval for humanoid robots.
