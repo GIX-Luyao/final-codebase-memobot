@@ -17,10 +17,11 @@ import numpy as np
 from scipy.signal import istft, resample, stft
 
 # Defaults aligned with test_audio_denoise.py (fan removal: strong gating, long profile, fine FFT)
+# Real-time: use first 0.7 s as fan noise, then strip it from the rest of the stream.
 DEFAULT_N_FFT = 8192
 DEFAULT_PROP_DECREASE = 0.97
 DEFAULT_N_STD_THRESH = 1.5
-DEFAULT_NOISE_DURATION_SEC = 3
+DEFAULT_NOISE_DURATION_SEC = 0.7
 DEFAULT_FREQ_MASK_SMOOTH_HZ = 500
 DEFAULT_TIME_MASK_SMOOTH_MS = 50
 TOP_DB = 80.0
@@ -323,6 +324,76 @@ def build_profile_from_video(
     return build_profile_from_noise(noise_segment, sr, **kwargs)
 
 
+def denoise_video_file(
+    video_path: str | Path,
+    output_path: str | Path,
+    noise_duration_sec: float = DEFAULT_NOISE_DURATION_SEC,
+    **kwargs: float | int | None,
+) -> Path:
+    """
+    Build a fan-noise profile from the first N seconds of the video, strip that
+    noise from the full track, and save a new video with denoised audio.
+
+    Args:
+        video_path: Input video (first noise_duration_sec used as noise sample).
+        output_path: Path for the output video (e.g. .../clip_denoised.mp4).
+        noise_duration_sec: Seconds of leading audio to use as noise (default 0.7).
+        **kwargs: Passed to build_profile_from_noise (n_fft, prop_decrease, etc.).
+
+    Returns:
+        Path to the written output file.
+    """
+    try:
+        from moviepy import VideoFileClip
+        from moviepy.audio.AudioClip import AudioArrayClip
+    except ImportError as e:
+        raise ImportError("moviepy is required for denoise_video_file") from e
+
+    video_path = Path(video_path)
+    output_path = Path(output_path)
+
+    # Load full audio and video
+    clip = VideoFileClip(str(video_path))
+    fps = getattr(clip.audio, "fps", 44100)
+    sr = int(round(fps))
+    audio = clip.audio.to_soundarray(fps=fps)
+    clip.close()
+
+    if audio.ndim == 1:
+        audio_int16 = (np.clip(audio, -1, 1) * 32767).astype(np.int16)
+    else:
+        audio_int16 = (np.clip(audio, -1, 1) * 32767).astype(np.int16)
+
+    # Noise segment: first N seconds
+    n_noise = min(int(sr * noise_duration_sec), audio_int16.shape[0])
+    if audio_int16.ndim == 1:
+        noise_segment = audio_int16[:n_noise]
+    else:
+        noise_segment = audio_int16[:n_noise, :]
+
+    profile = build_profile_from_noise(noise_segment, sr, **kwargs)
+    denoised = apply_profile(profile, audio_int16, return_float=True)
+
+    # AudioArrayClip expects (samples, channels) float in [-1, 1]
+    denoised = np.clip(denoised, -1.0, 1.0).astype(np.float64)
+    if denoised.ndim == 1:
+        denoised = denoised[:, np.newaxis]
+
+    clean_audio_clip = AudioArrayClip(denoised, fps=sr)
+    video_clip = VideoFileClip(str(video_path))
+    final = video_clip.with_audio(clean_audio_clip)
+    final.write_videofile(
+        str(output_path),
+        codec="libx264",
+        audio_codec="aac",
+        logger=None,
+    )
+    clean_audio_clip.close()
+    video_clip.close()
+    final.close()
+    return output_path
+
+
 # ---- Save / load profile (exact FFT + frequency setup) ----
 
 PROFILE_JSON = "denoising_profile.json"
@@ -422,30 +493,59 @@ def load_profile(path: str | Path) -> DenoisingProfile:
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Build and save denoising profile from reference video")
-    parser.add_argument("video", nargs="?", default=None, help="Reference video path (first N sec = noise)")
-    parser.add_argument("-o", "--out-dir", default=None, help="Output directory for profile")
-    parser.add_argument("--robot", action="store_true", help="Build 16 kHz profile for robot real-time (saves to denoising_profile_16k)")
-    parser.add_argument("--noise-sec", type=float, default=DEFAULT_NOISE_DURATION_SEC, help="Seconds of video to use as noise")
+    data_dir = Path(__file__).resolve().parents[1] / "ingest_pipeline" / "data"
+    default_video = data_dir / "clip_20260217_201526.mp4"
+    parser = argparse.ArgumentParser(
+        description="Build denoising profile and/or output denoised video (noise = first 0.7 s)."
+    )
+    parser.add_argument("video", nargs="?", default=None, help="Input video (first N sec = fan noise)")
+    parser.add_argument("-o", "--out-dir", default=None, help="Output directory for profile (build-profile mode)")
+    parser.add_argument(
+        "--denoise-out",
+        default=None,
+        metavar="PATH",
+        help="Output path for denoised video; default: input_denoised.mp4 in same dir when using default video",
+    )
+    parser.add_argument("--profile-only", action="store_true", help="Only build/save profile, do not write denoised video")
+    parser.add_argument("--robot", action="store_true", help="Build 16 kHz profile for robot (saves to denoising_profile_16k)")
+    parser.add_argument("--noise-sec", type=float, default=DEFAULT_NOISE_DURATION_SEC, help="Seconds of lead-in to use as noise (default 0.7)")
     parser.add_argument("--n-fft", type=int, default=DEFAULT_N_FFT)
     parser.add_argument("--prop-decrease", type=float, default=DEFAULT_PROP_DECREASE)
     args = parser.parse_args()
-    ref_default = Path(__file__).resolve().parents[1] / "ingest_pipeline" / "data" / "clip_20260217_170454.mp4"
-    video_path = args.video or str(ref_default)
-    if args.robot:
-        out_dir = args.out_dir or str(get_robot_profile_dir())
-        target_sr = 16000
-    else:
-        out_dir = args.out_dir or str(get_default_profile_dir())
-        target_sr = None
+    video_path = args.video or str(default_video)
     if not Path(video_path).exists():
         raise SystemExit(f"Video not found: {video_path}")
-    profile = build_profile_from_video(
-        video_path,
-        noise_duration_sec=args.noise_sec,
-        target_sr=target_sr,
-        n_fft=args.n_fft,
-        prop_decrease=args.prop_decrease,
-    )
-    save_profile(profile, out_dir)
-    print(f"Profile saved to {out_dir} (sr={profile.sr})")
+
+    denoise_out = args.denoise_out
+    if denoise_out is None and not args.profile_only:
+        # Default: save denoised version next to input
+        video_path_obj = Path(video_path)
+        denoise_out = str(video_path_obj.parent / f"{video_path_obj.stem}_denoised{video_path_obj.suffix}")
+
+    if denoise_out is not None:
+        # Denoise video: first 0.7 s = noise, strip from full track, save new file
+        out_path = denoise_video_file(
+            video_path,
+            denoise_out,
+            noise_duration_sec=args.noise_sec,
+            n_fft=args.n_fft,
+            prop_decrease=args.prop_decrease,
+        )
+        print(f"Denoised video saved to {out_path}")
+    else:
+        # Build and save profile only
+        if args.robot:
+            out_dir = args.out_dir or str(get_robot_profile_dir())
+            target_sr = 16000
+        else:
+            out_dir = args.out_dir or str(get_default_profile_dir())
+            target_sr = None
+        profile = build_profile_from_video(
+            video_path,
+            noise_duration_sec=args.noise_sec,
+            target_sr=target_sr,
+            n_fft=args.n_fft,
+            prop_decrease=args.prop_decrease,
+        )
+        save_profile(profile, out_dir)
+        print(f"Profile saved to {out_dir} (sr={profile.sr})")

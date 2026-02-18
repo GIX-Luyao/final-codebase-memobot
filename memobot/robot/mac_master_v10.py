@@ -55,97 +55,21 @@ except Exception as e:
 # --- IMPORT ORIGINAL SERVER LOGIC (sockets, ports, recv_exact, audio_tx_queue) ---
 import memobot.robot.mac_master_v3 as original_server
 
-# Real-time spectral denoising (fan hum): stream first 0.7s as noise profile, then
-# denoise with logic identical to tests/test_audio_denoise.py (noisereduce, no file I/O).
+# Real-time spectral denoising (fan hum): use first 0.7s as noise profile, then strip
+# with same logic as user_denoising.py (and test_audio_denoise.py).
 try:
-    import noisereduce as nr
-    _nr_available = True
-except ImportError:
-    nr = None
-    _nr_available = False
-
-
-def _denoise_audio(
-    audio: np.ndarray,
-    sr: int,
-    *,
-    noise_part: np.ndarray | None = None,
-    noise_duration_sec: float = 0.7,
-    prop_decrease: float = 0.97,
-    normalize_peak: float = 0.9,
-    return_float: bool = False,
-    n_fft: int = 4096,
-) -> np.ndarray:
-    """Denoise in memory via spectral gating (same as test_audio_denoise.denoise_audio)."""
-    if not _nr_available:
-        return audio
-    if audio.ndim == 1:
-        data = audio.astype(np.float64) if audio.dtype != np.float64 else audio.copy()
-        if data.dtype == np.int16:
-            data = data / 32768.0
-        data = data[np.newaxis, :]
-        single_channel = True
-    else:
-        data = audio.astype(np.float64) if audio.dtype != np.float64 else audio.copy()
-        if audio.dtype == np.int16:
-            data = data / 32768.0
-        data = data.T
-        single_channel = False
-    if noise_part is not None:
-        if noise_part.ndim == 1:
-            npart = noise_part.astype(np.float64)
-            if noise_part.dtype == np.int16:
-                npart = npart / 32768.0
-            npart = npart[np.newaxis, :]
-        else:
-            npart = noise_part.T.astype(np.float64)
-            if noise_part.dtype == np.int16:
-                npart = npart / 32768.0
-    else:
-        n_noise = min(int(sr * noise_duration_sec), data.shape[1])
-        npart = data[:, :n_noise]
-    reduced = nr.reduce_noise(
-        y=data, sr=sr, y_noise=npart,
-        prop_decrease=prop_decrease, stationary=True, n_fft=n_fft,
+    from memobot.robot.user_denoising import (
+        build_profile_from_noise,
+        apply_profile_to_bytes,
+        DEFAULT_NOISE_DURATION_SEC,
     )
-    max_val = np.max(np.abs(reduced))
-    if max_val > 0:
-        enhanced = reduced / max_val * normalize_peak
-    else:
-        enhanced = reduced
-    if not return_float:
-        enhanced = (enhanced * 32767).astype(np.int16)
-    if single_channel:
-        out = enhanced[0]
-    else:
-        out = enhanced.T
-    return out
+    _user_denoising_available = True
+except ImportError:
+    build_profile_from_noise = apply_profile_to_bytes = None
+    DEFAULT_NOISE_DURATION_SEC = 0.7
+    _user_denoising_available = False
 
-
-def _denoise_audio_bytes(
-    audio_bytes: bytes,
-    sample_rate: int,
-    *,
-    channels: int = 1,
-    sample_width: int = 2,
-    **kwargs: object,
-) -> bytes:
-    """Denoise raw PCM bytes (same as test_audio_denoise.denoise_audio_bytes)."""
-    if sample_width != 2:
-        raise ValueError("Only sample_width=2 (int16) is supported")
-    frame_size = channels * sample_width
-    if len(audio_bytes) % frame_size != 0:
-        audio_bytes = audio_bytes[: (len(audio_bytes) // frame_size) * frame_size]
-    samples = np.frombuffer(audio_bytes, dtype=np.int16)
-    if channels > 1:
-        audio = samples.reshape(-1, channels)
-    else:
-        audio = samples
-    out = _denoise_audio(audio, sample_rate, return_float=False, **kwargs)
-    return out.astype(np.int16).tobytes()
-
-
-DENOISING_AVAILABLE = _nr_available
+DENOISING_AVAILABLE = _user_denoising_available
 
 # --- GEMINI LIVE (Google) REALTIME AGENT ---
 try:
@@ -602,13 +526,13 @@ def patched_receive_audio_from_robot():
         print("[Audio RX] Fan noise filter enabled (bandpass 300–4000 Hz).")
     print(f"[Audio RX] Mic input gain: {MIC_INPUT_GAIN}x (for distant speech).")
 
-    # Streaming noise profile: first 0.7s of session audio used as fan noise profile (same as test_audio_denoise).
-    NOISE_DURATION_SEC = 0.7
+    # Streaming noise profile: first 0.7s of session audio → build profile (user_denoising), then denoise each chunk.
+    NOISE_DURATION_SEC = DEFAULT_NOISE_DURATION_SEC
     noise_profile_bytes_needed = int(ROBOT_AUDIO_RATE * NOISE_DURATION_SEC * 2)  # mono int16
     noise_buffer = bytearray()
-    noise_part = None  # np.ndarray set once we have 0.7s
+    denoising_profile = None  # DenoisingProfile set once we have 0.7s
     if DENOISING_AVAILABLE and original_server.ROBOT_RATE == ROBOT_AUDIO_RATE:
-        print(f"[Audio RX] Spectral denoising: will use first {NOISE_DURATION_SEC}s of stream as fan noise profile.")
+        print(f"[Audio RX] Spectral denoising: will use first {NOISE_DURATION_SEC}s of stream as fan noise profile (user_denoising).")
 
     vad_model = None
     if SILERO_VAD_AVAILABLE:
@@ -658,26 +582,26 @@ def patched_receive_audio_from_robot():
             if session_active:
                 # Connected: apply full pipeline (bandpass → spectral denoise → gain), then feed downstream
                 data = noise_filter.process(data)
-                # Build noise profile from first 0.7s of stream (fan detection), then denoise identically to test_audio_denoise
+                # Build noise profile from first 0.7s of stream (user_denoising), then denoise each chunk the same way
                 if DENOISING_AVAILABLE and original_server.ROBOT_RATE == ROBOT_AUDIO_RATE:
-                    if noise_part is None:
+                    if denoising_profile is None:
                         noise_buffer.extend(data)
                         if len(noise_buffer) >= noise_profile_bytes_needed:
                             raw_noise = bytes(noise_buffer[:noise_profile_bytes_needed])
                             noise_part = np.frombuffer(raw_noise, dtype=np.int16)
                             noise_buffer = bytearray()
-                            print("[Audio RX] Fan noise profile ready (0.7s). Spectral denoising enabled.")
-                    if noise_part is not None and DENOISING_AVAILABLE:
-                        try:
-                            data = _denoise_audio_bytes(
-                                data,
-                                ROBOT_AUDIO_RATE,
-                                channels=1,
-                                noise_part=noise_part,
-                                noise_duration_sec=NOISE_DURATION_SEC,
+                            denoising_profile = build_profile_from_noise(
+                                noise_part, ROBOT_AUDIO_RATE,
                                 prop_decrease=0.97,
-                                normalize_peak=0.9,
                                 n_fft=8192,
+                            )
+                            print("[Audio RX] Fan noise profile ready (0.7s). Spectral denoising enabled (user_denoising).")
+                    if denoising_profile is not None:
+                        try:
+                            data = apply_profile_to_bytes(
+                                denoising_profile,
+                                data,
+                                channels=1,
                             )
                         except Exception:
                             pass
