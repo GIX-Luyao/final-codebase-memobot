@@ -183,6 +183,9 @@ def thread_code_receiver(mac_ip, port, stop_event):
                 if code_str.strip() == "WAKE":
                     print "\n>>> CODE TRIGGER RECEIVED: WAKE <<<"
                     wake_event.set()
+                elif code_str.strip() == "SLEEP":
+                    print "\n>>> CODE TRIGGER RECEIVED: SLEEP <<<"
+                    sleep_event.set()
                 else:
                     print "\n" + "=" * 60 + "\nRECEIVED CODE FROM MAC\n" + "=" * 60
                     print code_str + "\n" + "=" * 60 + "\n"

@@ -724,6 +724,17 @@ class RealtimeAgent:
                 function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
             elif name == "goodbye":
                 self._request_goodbye_close = True
+                
+                # Send SLEEP command to robot client via TCP (length-prefixed)
+                if code_command_socket:
+                    try:
+                        sleep_msg = b"SLEEP"
+                        header = struct.pack(">L", len(sleep_msg))
+                        code_command_socket.sendall(header + sleep_msg)
+                        print("[DEBUG] goodbye: Sent SLEEP command to robot.")
+                    except Exception as e:
+                        print(f"[DEBUG] goodbye: Failed to send SLEEP command: {e}")
+
                 result = {
                     "message": "Say a brief, friendly goodbye (e.g. 'Goodbye! Just say Jarvis whenever you want to talk again.') and nothing else. The session will end after you finish speaking.",
                 }
