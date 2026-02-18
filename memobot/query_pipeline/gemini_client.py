@@ -7,6 +7,8 @@ import threading
 import queue
 import time
 from collections import deque
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 try:
@@ -20,6 +22,7 @@ try:
     from google.genai.types import (
         Content,
         FunctionDeclaration,
+        GoogleSearch,
         LiveConnectConfig,
         Part,
         PrebuiltVoiceConfig,
@@ -35,6 +38,7 @@ except ImportError:
     types = None
     Content = Part = LiveConnectConfig = SpeechConfig = VoiceConfig = None
     PrebuiltVoiceConfig = Tool = FunctionDeclaration = Schema = SchemaType = None
+    GoogleSearch = None
     print("[Warning] google-genai package not found. Install with: pip install google-genai")
 
 try:
@@ -119,7 +123,7 @@ MIC_QUEUE_MAXSIZE = 3         # Reduced to prevent audio backlog
 MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 # Model for writeCode: generateContent (text/code) API
 CODE_GENERATION_MODEL = "gemini-3-flash-preview"
-VOICE_NAME = "Aoede"
+VOICE_NAME = "Alnilam"
 
 NAO_CODE_SYSTEM_PROMPT = (
     "You are a NAO robot (Aldebaran/SoftBank) code generator. "
@@ -129,14 +133,17 @@ NAO_CODE_SYSTEM_PROMPT = (
 
 BASE_INSTRUCTIONS = (
     "You are Jarvis, a NAO V4 robot (Aldebaran/SoftBank). You have a voice and a body; you can move, gesture, and run code on the robot.\n\n"
+    "LOCATION AND TIME: You are in Bellevue, Washington. Use Pacific time (Pacific Coast / America/Los_Angeles) for the current date and time when relevant.\n\n"
     "LANGUAGE: Speak in English, Chinese (中文) as appropriate—match the user's language or use English by default. Keep replies short.\n\n"
     "TOOLS — use them when relevant:\n"
     "• retrieveMemory: Call when the user asks about the past, preferences, people, or anything that might be in memory. Do not answer from memory without calling it. Do not guess. Do NOT call retrieveMemory for identity questions like 'who am I', 'what is my name', 'what's my name'—answer from the current speaker context (you are told who is speaking).\n"
+    "• Google Search: You have access to Google Search for current information (e.g. weather, news, recent events, facts). Use it when the user asks about things that require up-to-date or external information.\n"
     "• searchRobotActions: Call when the user wants to know what actions you can do (e.g. movements, gestures, speech) or when you need to look up available robot actions by keyword or category.\n"
     "• writeCode: Call when the user wants you to do something programmable on the robot (e.g. dance, wave, walk, say something specific, perform a sequence). Provide a clear coding_prompt describing the behavior. Code is generated for NAO (Python/naoqi).\n"
     "• executeCode: Call only after writeCode has been used. When the user says to run, execute, or perform the code (e.g. 'run it', 'execute', 'do it'), call executeCode to send the last generated code to the robot. Do not call executeCode before writeCode.\n"
     "• saveCode: Call when the user explicitly asks to save the code to a file; provide code and filename.\n"
-    "• updateMyName: Call when the user says their name (e.g. 'My name is Jason', 'Call me Sarah'). Updates the current speaker's name in the database. Use the name they give.\n\n"
+    "• updateMyName: Call when the user says their name (e.g. 'My name is Jason', 'Call me Sarah'). Updates the current speaker's name in the database. Use the name they give.\n"
+    "• goodbye: Call when the user clearly ends the conversation (e.g. goodbye, see you later, that's all for now, I'm done). Do not call for brief pauses or 'one more thing'.\n\n"
     "RULES: Do not make up facts. Be concise. If unsure, say so."
 )
 
@@ -163,6 +170,13 @@ def _get_retrieve_memory_tool():
             )
         ]
     )
+
+
+def _get_google_search_tool():
+    """Return a Tool that enables Google Search grounding for the Live API (current info, citations)."""
+    if Tool is None or GoogleSearch is None:
+        return None
+    return Tool(google_search=GoogleSearch())
 
 
 def _get_extra_tools():
@@ -259,6 +273,15 @@ def _get_extra_tools():
                         ),
                     },
                     required=["name"],
+                ),
+            ),
+            FunctionDeclaration(
+                name="goodbye",
+                description="End the conversation. Call when the user says goodbye, see you later, that's all, I'm done, or clearly wants to end the session. The session will close and they can say Jarvis again to start a new conversation.",
+                parameters=Schema(
+                    type=SchemaType.OBJECT,
+                    properties={},
+                    required=[],
                 ),
             ),
         ]
@@ -400,10 +423,11 @@ class RealtimeAgent:
         self.session = None
         self.memobot_service = None
         self.audio_mgr = AudioManager()
-        
+        self._request_goodbye_close = False  # Set by goodbye tool; receive loop exits after current turn
+
         # Queue for sending mic audio to gemini - smaller to reduce latency
         self.audio_queue_mic = asyncio.Queue(maxsize=MIC_QUEUE_MAXSIZE)
-        
+
         self._init_memobot_service()
     
     def _init_memobot_service(self):
@@ -491,6 +515,12 @@ class RealtimeAgent:
 
     def _get_config(self):
         instructions = BASE_INSTRUCTIONS
+        # Inject current date/time in Pacific so the model can answer "what's the date" etc.
+        try:
+            now_pacific = datetime.now(ZoneInfo("America/Los_Angeles"))
+            instructions += f"\n\nCurrent date and time (Pacific): {now_pacific.strftime('%A, %B %d, %Y. %I:%M %p Pacific time')}."
+        except Exception:
+            pass
         if self.user_name:
             instructions += f"\n\nThe user is {self.user_name}."
         if LiveConnectConfig is None:
@@ -501,6 +531,7 @@ class RealtimeAgent:
                 "input_audio_transcription": {},
                 "output_audio_transcription": {},
                 "tools": [
+                    {"google_search": {}},
                     {
                         "function_declarations": [{
                             "name": "retrieveMemory",
@@ -519,13 +550,15 @@ class RealtimeAgent:
                             {"name": "executeCode", "description": "Send last_code to robot via TCP. Requires code_status True (call writeCode first).", "parameters": {"type": "OBJECT", "properties": {"code": {"type": "STRING"}, "language": {"type": "STRING"}}, "required": []}},
                             {"name": "saveCode", "description": "Save code to a file.", "parameters": {"type": "OBJECT", "properties": {"code": {"type": "STRING"}, "filename": {"type": "STRING"}}, "required": ["code", "filename"]}},
                             {"name": "updateMyName", "description": "Update the current speaker's name in the database. Call when the user says their name.", "parameters": {"type": "OBJECT", "properties": {"name": {"type": "STRING", "description": "The name the user wants to be called."}}, "required": ["name"]}},
+                            {"name": "goodbye", "description": "End the conversation when the user says goodbye or wants to end the session. Session will close; user can say Jarvis again to restart.", "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
                         ]
                     },
                 ],
             }
+        google_search_tool = _get_google_search_tool()
         memory_tool = _get_retrieve_memory_tool()
         extra_tool = _get_extra_tools()
-        tools = [t for t in [memory_tool, extra_tool] if t is not None]
+        tools = [t for t in [google_search_tool, memory_tool, extra_tool] if t is not None]
         return LiveConnectConfig(
             output_audio_transcription={},
             input_audio_transcription={},
@@ -689,6 +722,12 @@ class RealtimeAgent:
                     "bytes_written": len(code.encode("utf-8")),
                 }
                 function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
+            elif name == "goodbye":
+                self._request_goodbye_close = True
+                result = {
+                    "message": "Say a brief, friendly goodbye (e.g. 'Goodbye! Just say Jarvis whenever you want to talk again.') and nothing else. The session will end after you finish speaking.",
+                }
+                function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
             elif name == "updateMyName":
                 new_name = (args.get("name") or "").strip()
                 if not new_name:
@@ -802,6 +841,9 @@ class RealtimeAgent:
 
                 # After turn ends: clear queue so playback stops (no message—AI just finished)
                 self.audio_mgr.interrupt(print_message=False)
+                if self._request_goodbye_close:
+                    print("\n[Goodbye] Ending session after goodbye; say Jarvis to talk again.")
+                    break
         except asyncio.CancelledError:
             print("[DEBUG] receive_responses cancelled")
             raise
@@ -999,11 +1041,11 @@ class ServerRealtimeAgent(RealtimeAgent):
                                 raise
                             except Exception as e:
                                 if WsConnectionClosedError is not None and isinstance(e, WsConnectionClosedError):
-                                    print(f"[WARN] send_audio: connection closed (1008 policy), continuing: {e}")
-                                    continue
+                                    print(f"[WARN] send_audio: connection closed (1008 policy): {e}")
+                                    return
                                 if "1008" in str(e) or "policy violation" in str(e).lower():
-                                    print(f"[WARN] send_audio: policy violation / connection closed, continuing: {e}")
-                                    continue
+                                    print(f"[WARN] send_audio: policy violation / connection closed: {e}")
+                                    return
                                 print(f"[ERROR] send_audio: {e}")
                                 continue
                     except asyncio.CancelledError:
@@ -1062,15 +1104,18 @@ class ServerRealtimeAgent(RealtimeAgent):
                                     self._pending_identity_confirmation = False
                                 if ai_text_started:
                                     print()
+                                if getattr(self, "_request_goodbye_close", False):
+                                    print("\n[Goodbye] Ending session after goodbye; say Jarvis to talk again.")
+                                    return
                             except asyncio.CancelledError:
                                 raise
                             except Exception as e:
                                 if WsConnectionClosedError is not None and isinstance(e, WsConnectionClosedError):
-                                    print(f"[WARN] receive_responses: connection closed (1008 policy), continuing: {e}")
-                                    continue
+                                    print(f"[WARN] receive_responses: connection closed (1008 policy): {e}")
+                                    return  # Connection is dead; exit so session can clean up
                                 if "1008" in str(e) or "policy violation" in str(e).lower():
-                                    print(f"[WARN] receive_responses: policy violation / connection closed, continuing: {e}")
-                                    continue
+                                    print(f"[WARN] receive_responses: policy violation / connection closed: {e}")
+                                    return  # Connection is dead; exit so session can clean up
                                 print(f"[ERROR] receive_responses: {e}")
                                 import traceback
                                 traceback.print_exc()
