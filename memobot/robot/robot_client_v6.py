@@ -13,6 +13,7 @@ import tempfile
 import math
 import numpy as np
 import cv2
+import collections
 
 from naoqi import ALProxy, ALBroker, ALModule
 import vision_definitions
@@ -24,6 +25,11 @@ STATE_RUNNING = True
 
 wake_event = threading.Event()
 sleep_event = threading.Event()
+
+# Buffer for sound localization history
+sound_buffer = collections.deque(maxlen=200)
+sound_buffer_lock = threading.Lock()
+WAKE_WORD_LAG = 1.0  # Seconds to look back for the sound source
 
 # Resources
 resources = {
@@ -84,6 +90,47 @@ def thread_receive_audio_from_mac(mac_ip, port, stop_event):
         try: audio_process.terminate()
         except: pass
         print "[Audio RX] Stopped."
+
+
+def thread_sound_monitor(memory_proxy, motion_proxy, stop_event):
+    """Continuously polls ALMemory for sound events to build a history buffer."""
+    print "[SoundMonitor] Started tracking sound history."
+    last_ts_seen = 0.0
+    
+    while not stop_event.is_set():
+        try:
+            # Poll ALAudioSourceLocalization/SoundLocated
+            data = memory_proxy.getData("ALAudioSourceLocalization/SoundLocated")
+            if data and len(data) > 1:
+                # data[0] is [sec, usec]
+                ts_sec = data[0][0]
+                ts_usec = data[0][1]
+                event_ts_robot = ts_sec + (ts_usec / 1000000.0)
+                
+                # Check if this is a new event frame
+                if event_ts_robot != last_ts_seen:
+                    last_ts_seen = event_ts_robot
+                    azimuth = data[1][0]
+                    energy = data[1][3]
+                    
+                    # Get current head yaw to compensate for head rotation
+                    head_yaw = 0.0
+                    try:
+                        head_yaw = motion_proxy.getAngles("HeadYaw", True)[0]
+                    except: pass
+
+                    # Store with local system time for history lookup
+                    with sound_buffer_lock:
+                        sound_buffer.append({
+                            'time': time.time(),
+                            'azimuth': azimuth,
+                            'head_yaw': head_yaw,
+                            'energy': energy
+                        })
+        except Exception:
+            pass
+        time.sleep(0.05)
+    print "[SoundMonitor] Stopped."
 
 
 def thread_video_tx(mac_ip, port, robot_ip, camera_id, stop_event):
@@ -269,9 +316,26 @@ def main():
         audioLocProxy = ALProxy("ALAudioSourceLocalization", args.robot_ip, 9559)
         resources["life_proxy"] = ALProxy("ALAutonomousLife", args.robot_ip, 9559)
         
-        # Disable intrinsic tracking and listening
-        resources["life_proxy"].setAutonomousAbilityEnabled("Listening", False)
-        resources["life_proxy"].setAutonomousAbilityEnabled("BasicAwareness", False)
+        # NAOqi 2.1: Disable Autonomous Life (no internal decisions) but manually start BasicAwareness
+        # try:
+        #     # 1. Disable Autonomous Life entirely
+        #     if resources["life_proxy"].getState() != "disabled":
+        #         resources["life_proxy"].setState("disabled")
+            
+        #     # 2. Manually start BasicAwareness for head tracking only
+        #     awareness = ALProxy("ALBasicAwareness", args.robot_ip, 9559)
+        #     # Ensure stimulus detection is on
+        #     awareness.setStimulusDetectionEnabled("Sound", True)
+        #     awareness.setStimulusDetectionEnabled("People", True)
+        #     awareness.setParameter("LookStimulusSpeed", 0.7)
+            
+        #     # 3. Start it (independent of Autonomous Life)
+        #     if not awareness.isAwarenessRunning():
+        #         awareness.startAwareness()
+        #     print "[BasicAwareness] Started manually (Sound+People tracking enabled)."
+            
+        # except Exception as e:
+        #     print "Warning configuring AutonomousLife/Awareness: ", e
 
         # Init Localization (subscribe to populate ALMemory)
         audioLocProxy.setParameter("Sensitivity", 0.5)
@@ -284,8 +348,6 @@ def main():
 
     except Exception as e:
         print "Could not create proxies: ", e
-        myBroker.shutdown()
-        sys.exit(1)
 
     print "Waking up..."
     motionProxy.wakeUp()
@@ -310,8 +372,9 @@ def main():
     t_video_tx = threading.Thread(target=thread_video_tx, args=(args.mac_ip, args.port_video_rx, args.robot_ip, args.camera_id, stop_event))
     t_code_rx = threading.Thread(target=thread_code_receiver, args=(args.mac_ip, args.port_code_rx, stop_event))
     t_cmd_rx = threading.Thread(target=thread_command_receiver, args=(args.port_cmd_rx, wake_event, sleep_event, stop_event))
+    t_sound_mon = threading.Thread(target=thread_sound_monitor, args=(memoryProxy, motionProxy, stop_event))
     
-    for t in [t_audio_rx, t_video_tx, t_code_rx, t_cmd_rx]:
+    for t in [t_audio_rx, t_video_tx, t_code_rx, t_cmd_rx, t_sound_mon]:
         t.daemon = True
         t.start()
 
@@ -336,17 +399,62 @@ def main():
                     
                     # 2. Localize Sound and Turn
                     try:
-                        sound_data = memoryProxy.getData("ALAudioSourceLocalization/SoundLocated")
-                        # Data struct: [ [time_sec, time_usec], [azimuth, elevation, confidence, energy], [Head_Pose_6D] ]
-                        if sound_data and len(sound_data) > 1:
-                            azimuth = sound_data[1][0]
-                            print "Turning to face speaker (Azimuth: %.2f rad)..." % azimuth
-                            motionProxy.moveTo(0.0, 0.0, azimuth)
+                        # Attempt to find sound event from ~WAKE_WORD_LAG seconds ago
+                        target_time = time.time() - WAKE_WORD_LAG
+                        best_entry = None
+                        min_diff = 1000.0
+                        
+                        with sound_buffer_lock:
+                            for entry in sound_buffer:
+                                diff = abs(entry['time'] - target_time)
+                                if diff < min_diff:
+                                    min_diff = diff
+                                    best_entry = entry
+                        
+                        target_azimuth = None
+                        
+                        # Use historical data if it's reasonably close (e.g. within 1.0s of the target window)
+                        if best_entry and min_diff < 1.0:
+                            head_yaw = best_entry.get('head_yaw', 0.0)
+                            target_azimuth = best_entry['azimuth'] + head_yaw
+                            print ">> Using historical sound from %.2fs ago (diff=%.2fs, HeadAzimuth: %.2f, HeadYaw: %.2f, BodyAzimuth: %.2f)" % (WAKE_WORD_LAG, min_diff, best_entry['azimuth'], head_yaw, target_azimuth)
+                        else:
+                            print ">> Historical sound lookup failed (min_diff=%.2f). Fallback to immediate." % min_diff
+                            # Fallback to immediate data
+                            sound_data = memoryProxy.getData("ALAudioSourceLocalization/SoundLocated")
+                            if sound_data and len(sound_data) > 1:
+                                head_azimuth = sound_data[1][0]
+                                head_yaw = 0.0
+                                try:
+                                    # Get current head yaw
+                                    head_yaw = motionProxy.getAngles("HeadYaw", True)[0]
+                                except: pass
+                                target_azimuth = head_azimuth + head_yaw
+                        
+                        if target_azimuth is not None:
+                            # Normalize angle to [-pi, pi] to take shortest turn
+                            target_azimuth = (target_azimuth + np.pi) % (2 * np.pi) - np.pi
+                            print "Turning to face speaker (Body Azimuth: %.2f rad)..." % target_azimuth
+                            motionProxy.moveTo(0.0, 0.0, target_azimuth)
+                            
                     except Exception as e:
                         print "Sound localization failed, skipping turn: ", e
                         
-                    # 3. Ready for interaction
-                    postureProxy.goToPosture("StandInit", 0.5)
+                    # # 3. Ready for interaction
+                    # postureProxy.goToPosture("StandInit", 0.5)
+
+                    # # Re-enable BasicAwareness to ensure head tracking during interaction
+                    # try:
+                    #     awareness = ALProxy("ALBasicAwareness", args.robot_ip, 9559)
+                    #     awareness.setStimulusDetectionEnabled("Sound", True)
+                    #     awareness.setStimulusDetectionEnabled("People", True)
+                    #     awareness.setParameter("LookStimulusSpeed", 0.7)
+                    #     if not awareness.isAwarenessRunning():
+                    #         awareness.startAwareness()
+                    #     print "[BasicAwareness] Resumed for interaction."
+                    # except Exception as e:
+                    #     print "Warning resuming BasicAwareness: ", e
+
                     print ">> ROBOT READY. (Interaction Active) <<"
                     
                 else:
