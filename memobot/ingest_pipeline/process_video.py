@@ -20,10 +20,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import json
 
-# #region agent log
-print("DEBUG_LOG: process_video.py - Top of file")
-# #endregion
-
 import cv2
 import numpy as np
 from dotenv import load_dotenv

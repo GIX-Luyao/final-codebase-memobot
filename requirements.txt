@@ -67,7 +67,7 @@ pinecone-plugin-interface>=0.0.7,<1
 # ---------- Video / AI APIs ----------
 # Google Vertex AI + Gemini (embeddings + video understanding)
 google-cloud-aiplatform
-google-genai==1.59.0
+google-genai
 
 # ---------- CV / Audio / Video ----------
 opencv-python>=4.8,<5

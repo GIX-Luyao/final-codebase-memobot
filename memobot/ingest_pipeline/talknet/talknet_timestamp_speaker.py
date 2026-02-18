@@ -95,8 +95,9 @@ def run_talknet_demo(repo_root: Path, video_name: str, force: bool = False, conf
         return demo_out
 
     cmd = ["python3", "demoTalkNet.py", "--videoName", video_name, "--confidenceThreshold", str(confidence_threshold)]
-    print(f"[TalkNet] Running: {' '.join(cmd)}")
-    subprocess.run(cmd, cwd=str(repo_root), check=True)
+    env = os.environ.copy()
+    env["INGEST_QUIET"] = "1"
+    subprocess.run(cmd, cwd=str(repo_root), check=True, env=env)
 
     if not demo_out.exists():
         raise FileNotFoundError(

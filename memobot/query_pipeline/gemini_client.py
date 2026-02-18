@@ -10,6 +10,7 @@ from collections import deque
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
+from google import genai
 
 try:
     import numpy as np
@@ -20,6 +21,7 @@ try:
     from google import genai
     from google.genai import types
     from google.genai.types import (
+        AudioTranscriptionConfig,
         Content,
         FunctionDeclaration,
         GoogleSearch,
@@ -36,7 +38,7 @@ try:
 except ImportError:
     genai = None
     types = None
-    Content = Part = LiveConnectConfig = SpeechConfig = VoiceConfig = None
+    AudioTranscriptionConfig = Content = Part = LiveConnectConfig = SpeechConfig = VoiceConfig = None
     PrebuiltVoiceConfig = Tool = FunctionDeclaration = Schema = SchemaType = None
     GoogleSearch = None
     print("[Warning] google-genai package not found. Install with: pip install google-genai")
@@ -162,12 +164,12 @@ NAO_CODE_SYSTEM_PROMPT = (
 
 BASE_INSTRUCTIONS = (
     "You are Jarvis, a NAO V4 robot (Aldebaran/SoftBank). You have a voice and a body; you can move, gesture, and run code on the robot.\n\n"
-    "WAKE WORD: When the user's message is exactly 'Jarvis' (they just said the wake word to start the session), respond with only 'Yes?' and nothing else. No greeting, no 'how can I help'—just 'Yes?'.\n\n"
     "LOCATION AND TIME: You are in Bellevue, Washington. Use Pacific time (Pacific Coast / America/Los_Angeles) for the current date and time when relevant.\n\n"
     "LANGUAGE: Speak in English, Chinese (中文) as appropriate—match the user's language or use English by default. Keep replies short.\n\n"
+    "CURRENT SPEAKER (identity): You are told who is speaking (name, person_id). Use that for identity. Do NOT call retrieveMemory for anything about the current user or who you're talking to: e.g. 'my name', 'who am I', 'what is my name', 'who are you talking to', 'what's my name'. Answer those directly from the current speaker context.\n\n"
     "TOOLS — use them when relevant:\n"
-    "• retrieveMemory: Call when the user asks about the past, preferences, people, or anything that might be in memory. Do not answer from memory without calling it. Do not guess. Do NOT call retrieveMemory for identity questions like 'who am I', 'what is my name', 'what's my name'—answer from the current speaker context (you are told who is speaking).\n"
-    "• Google Search: You have access to Google Search for current information (e.g. weather, news, recent events, facts). Use it when the user asks about things that require up-to-date or external information.\n"
+    "• retrieveMemory: Call only for past events, preferences, or stored facts (e.g. 'what did we talk about last time', 'what does Jason like'). Never call it for the current user's name, who is speaking, or who you're talking to—use the current speaker context instead.\n"
+    "• Google Search: You have access to Google Search for current information (e.g. weather, news, recent events, facts). Use it when the user asks about things that require up-to-date or external information. When you are about to use Google Search, say aloud first only 'Searching...' (so the robot speaks it), then provide your grounded answer.\n"
     "• searchRobotActions: Call when the user wants to know what actions you can do (e.g. movements, gestures, speech) or when you need to look up available robot actions by keyword or category.\n"
     "• writeCode: Call when the user wants you to do something programmable on the robot (e.g. dance, wave, walk, say something specific, perform a sequence). Provide a clear coding_prompt describing the behavior. Code is generated for NAO (Python/naoqi).\n"
     "• executeCode: Call only after writeCode has been used. When the user says to run, execute, or perform the code (e.g. 'run it', 'execute', 'do it'), call executeCode to send the last generated code to the robot. Do not call executeCode before writeCode.\n"
@@ -186,7 +188,7 @@ def _get_retrieve_memory_tool():
         function_declarations=[
             FunctionDeclaration(
                 name="retrieveMemory",
-                description="Retrieve past memories based on a natural language query. Do not use for identity questions (e.g. who am I, what is my name)—use the current speaker context instead.",
+                description="Retrieve past memories (events, preferences, facts) by natural language query. Do NOT use for: current user's name, who is speaking, 'my name', 'who am I', 'what is my name', 'who are you talking to'—answer those from the current speaker context (session identity), not from memory.",
                 parameters=Schema(
                     type=SchemaType.OBJECT,
                     properties={
@@ -589,7 +591,8 @@ class RealtimeAgent:
         memory_tool = _get_retrieve_memory_tool()
         extra_tool = _get_extra_tools()
         tools = [t for t in [google_search_tool, memory_tool, extra_tool] if t is not None]
-        return LiveConnectConfig(
+        # Transcription config: use AudioTranscriptionConfig (same as working Live API examples) so "You said" / "Gemini said" transcriptions work.
+        config_kw = dict(
             response_modalities=["AUDIO"],
             speech_config=SpeechConfig(
                 voice_config=VoiceConfig(
@@ -598,7 +601,10 @@ class RealtimeAgent:
             ),
             system_instruction=Content(parts=[Part(text=instructions)]),
             tools=tools,
+            input_audio_transcription=AudioTranscriptionConfig(),
+            output_audio_transcription=AudioTranscriptionConfig(),
         )
+        return LiveConnectConfig(**config_kw)
 
     async def retrieve_memory(self, query):
         """Retrieve memories from vector DB and knowledge graph."""
@@ -757,34 +763,45 @@ class RealtimeAgent:
                 code = (args.get("code") or "").strip() or last_code
                 filename = (args.get("filename") or "").strip()
                 result = {"saved": False, "filename": filename, "message": "", "bytes_written": 0}
+                print(f"[saveCode] Called with filename={filename!r}, code_len={len(code) if code else 0}, last_code_available={last_code is not None}")
                 if not filename:
                     result["message"] = "No filename provided. Provide a name (e.g. wave_hand or wave_hand.py) to save the action."
+                    print("[saveCode] Aborted: no filename provided.")
                     function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
                 elif not code:
                     result["message"] = "No code to save. Generate code with writeCode first, or pass the code to save."
+                    print("[saveCode] Aborted: no code to save (writeCode first or pass code).")
                     function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
                 else:
                     action_mgr = _get_action_manager_instance()
                     if not action_mgr:
                         result["message"] = "Robot actions database not configured (GITHUB_TOKEN, GITHUB_REPO)."
+                        print("[saveCode] Aborted: ActionManager not available (set GITHUB_TOKEN and GITHUB_REPO).")
                         function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
                     else:
+                        # Action name from filename (see code_db README: filename is action name, e.g. wave_hand or wave_hand.py)
                         action_name = os.path.basename(filename).replace(".py", "").strip() or "unnamed_action"
                         keywords = [k for k in action_name.replace("-", "_").split("_") if k]
+                        message = "Saved via Jarvis"
+                        print(f"[saveCode] Saving to GitHub via ActionManager: name={action_name!r}, keywords={keywords}, message={message!r}")
                         try:
+                            # ActionManager.save_action(name, code, keywords, message) -> updates repo + index.json
                             saved = await asyncio.to_thread(
                                 action_mgr.save_action,
                                 action_name,
                                 code,
                                 keywords,
-                                "Saved via Jarvis",
+                                message,
                             )
                             result["saved"] = True
-                            result["message"] = f"Action '{action_name}' saved to code_db."
+                            result["message"] = f"Action '{action_name}' saved to code_db (GitHub repo)."
                             result["bytes_written"] = len(code.encode("utf-8"))
                             result["path"] = saved.get("path", f"actions/{action_name}.py")
+                            print(f"[saveCode] Success: saved to {result['path']!r} ({result['bytes_written']} bytes)")
                         except Exception as e:
-                            print(f"[DEBUG] saveCode error: {e}")
+                            print(f"[saveCode] Error: {e}")
+                            import traceback
+                            traceback.print_exc()
                             result["message"] = str(e)
                         function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
             elif name == "goodbye":
@@ -940,9 +957,18 @@ class RealtimeAgent:
         try:
             async with self.client.aio.live.connect(model=MODEL, config=config) as session:
                 self.session = session
+                self._request_goodbye_close = False  # Reset so previous session's goodbye doesn't close this one
                 print("✅ Connected to Gemini Live API!")
+
+                # Send "Jarvis" so the model replies "Yes?" right away (mimics wake word at session start).
+                try:
+                    print("⚡ Sending initial wake word...")
+                    await session.send(input="Say Yes?", end_of_turn=True)
+                except Exception as e:
+                    print(f"Error sending wake word: {e}")
+
                 print("🎙️  Start speaking...\n")
-                
+
                 # Create tasks manually for better control
                 tasks = [
                     asyncio.create_task(self.listen_audio(), name="listen"),
@@ -1096,16 +1122,47 @@ class ServerRealtimeAgent(RealtimeAgent):
             async with self.client.aio.live.connect(model=MODEL, config=config) as session:
                 self.session = session
                 self.session_connected = True
+                self._request_goodbye_close = False  # Reset so previous session's goodbye doesn't close this one
                 print("✅ Connected to Gemini Live API (robot server mode)!")
                 print("🎙️  Robot mic will be sent to Gemini; TTS will play on robot.\n")
 
-                # Send "Jarvis" as the first user turn so the AI responds (mimics the wake word the user said)
+                # Drain mic queue so we don't send the wake-word audio as realtime right after client_content.
+                # (On reconnection the wake word already put "Jarvis" audio in the queue; sending both
+                # client_content and that audio can prevent the model from replying "Yes?".)
+                if self.audio_queue_mic is not None:
+                    n_drained = 0
+                    try:
+                        while True:
+                            self.audio_queue_mic.get_nowait()
+                            n_drained += 1
+                    except (asyncio.QueueEmpty, Exception):
+                        pass
+                    if n_drained:
+                        print(f"[Live API] Drained {n_drained} buffered mic chunk(s) so wake reply is clean.")
+
+                # Send "Jarvis" as the first user turn so the AI responds with "Yes?" (mimics the wake word)
                 try:
-                    if Content is not None and Part is not None and hasattr(session, "send_client_content"):
-                        wake_turn = Content(role="user", parts=[Part(text="Jarvis")])
-                        await session.send_client_content(turns=wake_turn, turn_complete=True)
+                    if hasattr(session, "send_client_content"):
+                        if types is not None and hasattr(types, "Content") and hasattr(types, "Part"):
+                            wake_turn = types.Content(role="user", parts=[types.Part(text="Jarvis")])
+                            await session.send_client_content(turns=[wake_turn], turn_complete=True)
+                            print("[Live API] Sent wake turn 'Jarvis' -> expecting 'Yes?'")
+                        else:
+                            await session.send_client_content(
+                                turns=[{"role": "user", "parts": [{"text": "Jarvis"}]}],
+                                turn_complete=True,
+                            )
+                            print("[Live API] Sent wake turn 'Jarvis' (dict) -> expecting 'Yes?'")
+                    elif hasattr(session, "send"):
+                        await session.send(input="Jarvis", end_of_turn=True)
+                        print("[Live API] Sent wake turn 'Jarvis' (send) -> expecting 'Yes?'")
                 except Exception as e:
                     print(f"[Live API] Failed to send wake greeting: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                # Give the model a moment to process the wake turn and start "Yes?" before we pump realtime audio.
+                await asyncio.sleep(0.3)
 
                 async def send_audio():
                     try:

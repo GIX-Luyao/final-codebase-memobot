@@ -18,6 +18,13 @@ import gdown
 
 warnings.filterwarnings("ignore")
 
+def _log(msg):
+	"""Print to stderr only when not in ingest quiet mode."""
+	if not os.environ.get("INGEST_QUIET"):
+		sys.stderr.write(msg)
+
+_quiet = bool(os.environ.get("INGEST_QUIET"))
+
 parser = argparse.ArgumentParser(description = "TalkNet Demo or Columnbia ASD Evaluation")
 
 parser.add_argument('--videoName',             type=str, default="001",   help='Demo video name')
@@ -89,7 +96,7 @@ def scene_detect(args):
 		sceneList = [(videoManager.get_base_timecode(),videoManager.get_current_timecode())]
 	with open(savePath, 'wb') as fil:
 		pickle.dump(sceneList, fil)
-		sys.stderr.write('%s - scenes detected %d\n'%(args.videoFilePath, len(sceneList)))
+		_log('%s - scenes detected %d\n'%(args.videoFilePath, len(sceneList)))
 	return sceneList
 
 def inference_video(args):
@@ -105,7 +112,6 @@ def inference_video(args):
 		dets.append([])
 		for bbox in bboxes:
 		  dets[-1].append({'frame':fidx, 'bbox':(bbox[:-1]).tolist(), 'conf':bbox[-1]}) # dets has the frames info, bbox info, conf info
-		sys.stderr.write('%s-%05d; %d dets\r' % (args.videoFilePath, fidx, len(dets[-1])))
 	savePath = os.path.join(args.pyworkPath,'faces.pckl')
 	with open(savePath, 'wb') as fil:
 		pickle.dump(dets, fil)
@@ -208,12 +214,12 @@ def evaluate_network(files, args):
 	# GPU: active speaker detection by pretrained TalkNet
 	s = talkNet()
 	s.loadParameters(args.pretrainModel)
-	sys.stderr.write("Model %s loaded from previous state! \r\n"%args.pretrainModel)
+	_log("Model %s loaded from previous state! \r\n"%args.pretrainModel)
 	s.eval()
 	allScores = []
 	# durationSet = {1,2,4,6} # To make the result more reliable
 	durationSet = {1,1,1,2,2,2,3,3,4,5,6} # Use this line can get more reliable result
-	for file in tqdm.tqdm(files, total = len(files)):
+	for file in tqdm.tqdm(files, total = len(files), disable=_quiet):
 		fileName = os.path.splitext(file.split('/')[-1])[0] # Load audio and video
 		_, audio = wavfile.read(os.path.join(args.pycropPath, fileName + '.wav'))
 		audioFeature = python_speech_features.mfcc(audio, 16000, numcep = 13, winlen = 0.025, winstep = 0.010)
@@ -268,7 +274,7 @@ def visualization(tracks, scores, args):
 	fh = firstImage.shape[0]
 	vOut = cv2.VideoWriter(os.path.join(args.pyaviPath, 'video_only.avi'), cv2.VideoWriter_fourcc(*'XVID'), 25, (fw,fh))
 	colorDict = {0: 0, 1: 255}
-	for fidx, fname in tqdm.tqdm(enumerate(flist), total = len(flist)):
+	for fidx, fname in tqdm.tqdm(enumerate(flist), total = len(flist), disable=_quiet):
 		image = cv2.imread(fname)
 		for face in faces[fidx]:
 			clr = colorDict[int((face['score'] >= args.confidenceThreshold))]
@@ -312,7 +318,7 @@ def evaluate_col_ASD(tracks, scores, args):
 		for fidx, frame in enumerate(track['track']['frame'].tolist()):
 			s = numpy.mean(score[max(fidx - 2, 0): min(fidx + 3, len(score) - 1)]) # average smoothing
 			faces[frame].append({'track':tidx, 'score':float(s),'s':track['proc_track']['s'][fidx], 'x':track['proc_track']['x'][fidx], 'y':track['proc_track']['y'][fidx]})
-	for fidx, fname in tqdm.tqdm(enumerate(flist), total = len(flist)):
+	for fidx, fname in tqdm.tqdm(enumerate(flist), total = len(flist), disable=_quiet):
 		if fidx in dictGT: # This frame has label
 			for gtThisFrame in dictGT[fidx]: # What this label is ?
 				faceGT = gtThisFrame[0:4]
@@ -398,43 +404,43 @@ def main():
 		command = ("ffmpeg -y -i %s -qscale:v 2 -threads %d -ss %.3f -to %.3f -async 1 -r 25 %s -loglevel panic" % \
 			(args.videoPath, args.nDataLoaderThread, args.start, args.start + args.duration, args.videoFilePath))
 	subprocess.call(command, shell=True, stdout=None)
-	sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Extract the video and save in %s \r\n" %(args.videoFilePath))
+	_log(time.strftime("%Y-%m-%d %H:%M:%S") + " Extract the video and save in %s \r\n" %(args.videoFilePath))
 	
 	# Extract audio
 	args.audioFilePath = os.path.join(args.pyaviPath, 'audio.wav')
 	command = ("ffmpeg -y -i %s -qscale:a 0 -ac 1 -vn -threads %d -ar 16000 %s -loglevel panic" % \
 		(args.videoFilePath, args.nDataLoaderThread, args.audioFilePath))
 	subprocess.call(command, shell=True, stdout=None)
-	sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Extract the audio and save in %s \r\n" %(args.audioFilePath))
+	_log(time.strftime("%Y-%m-%d %H:%M:%S") + " Extract the audio and save in %s \r\n" %(args.audioFilePath))
 
 	# Extract the video frames
 	command = ("ffmpeg -y -i %s -qscale:v 2 -threads %d -f image2 %s -loglevel panic" % \
 		(args.videoFilePath, args.nDataLoaderThread, os.path.join(args.pyframesPath, '%06d.jpg'))) 
 	subprocess.call(command, shell=True, stdout=None)
-	sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Extract the frames and save in %s \r\n" %(args.pyframesPath))
+	_log(time.strftime("%Y-%m-%d %H:%M:%S") + " Extract the frames and save in %s \r\n" %(args.pyframesPath))
 
 	# Scene detection for the video frames
 	scene = scene_detect(args)
-	sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Scene detection and save in %s \r\n" %(args.pyworkPath))	
+	_log(time.strftime("%Y-%m-%d %H:%M:%S") + " Scene detection and save in %s \r\n" %(args.pyworkPath))	
 
 	# Face detection for the video frames
 	faces = inference_video(args)
-	sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face detection and save in %s \r\n" %(args.pyworkPath))
+	_log(time.strftime("%Y-%m-%d %H:%M:%S") + " Face detection and save in %s \r\n" %(args.pyworkPath))
 
 	# Face tracking
 	allTracks, vidTracks = [], []
 	for shot in scene:
 		if shot[1].frame_num - shot[0].frame_num >= args.minTrack: # Discard the shot frames less than minTrack frames
 			allTracks.extend(track_shot(args, faces[shot[0].frame_num:shot[1].frame_num])) # 'frames' to present this tracks' timestep, 'bbox' presents the location of the faces
-	sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face track and detected %d tracks \r\n" %len(allTracks))
+	_log(time.strftime("%Y-%m-%d %H:%M:%S") + " Face track and detected %d tracks \r\n" %len(allTracks))
 
 	# Face clips cropping
-	for ii, track in tqdm.tqdm(enumerate(allTracks), total = len(allTracks)):
+	for ii, track in tqdm.tqdm(enumerate(allTracks), total = len(allTracks), disable=_quiet):
 		vidTracks.append(crop_video(args, track, os.path.join(args.pycropPath, '%05d'%ii)))
 	savePath = os.path.join(args.pyworkPath, 'tracks.pckl')
 	with open(savePath, 'wb') as fil:
 		pickle.dump(vidTracks, fil)
-	sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Face Crop and saved in %s tracks \r\n" %args.pycropPath)
+	_log(time.strftime("%Y-%m-%d %H:%M:%S") + " Face Crop and saved in %s tracks \r\n" %args.pycropPath)
 	fil = open(savePath, 'rb')
 	vidTracks = pickle.load(fil)
 
@@ -445,7 +451,7 @@ def main():
 	savePath = os.path.join(args.pyworkPath, 'scores.pckl')
 	with open(savePath, 'wb') as fil:
 		pickle.dump(scores, fil)
-	sys.stderr.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Scores extracted and saved in %s \r\n" %args.pyworkPath)
+	_log(time.strftime("%Y-%m-%d %H:%M:%S") + " Scores extracted and saved in %s \r\n" %args.pyworkPath)
 
 	if args.evalCol == True:
 		evaluate_col_ASD(vidTracks, scores, args) # The columnbia video is too big for visualization. You can still add the `visualization` funcition here if you want
