@@ -63,6 +63,35 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")
 DOTENV_PATH = os.path.join(_REPO_ROOT, ".env")
 load_dotenv(dotenv_path=DOTENV_PATH, override=True)
 
+# Optional: code_db for search/save robot actions (requires GITHUB_TOKEN, GITHUB_REPO)
+def _load_action_manager_class():
+    """Load ActionManager class from code_db when env is configured."""
+    if not os.getenv("GITHUB_TOKEN") or not os.getenv("GITHUB_REPO"):
+        return None
+    try:
+        if _REPO_ROOT not in sys.path:
+            sys.path.insert(0, _REPO_ROOT)
+        from code_db.core import ActionManager as AM
+        return AM
+    except ImportError:
+        return None
+
+_ActionManagerClass = _load_action_manager_class()
+if _ActionManagerClass is not None:
+    print("[Info] code_db ActionManager loaded (search/save robot actions enabled)")
+else:
+    print("[Info] code_db not configured (set GITHUB_TOKEN and GITHUB_REPO to enable search/save robot actions)")
+
+def _get_action_manager_instance():
+    """Return an ActionManager instance if env is set; else None."""
+    if _ActionManagerClass is None:
+        return None
+    try:
+        return _ActionManagerClass()
+    except Exception as e:
+        print(f"[Warning] ActionManager init failed: {e}")
+        return None
+
 def _load_generate_nao_code():
     try:
         from memobot.tools import generate_nao_code
@@ -133,6 +162,7 @@ NAO_CODE_SYSTEM_PROMPT = (
 
 BASE_INSTRUCTIONS = (
     "You are Jarvis, a NAO V4 robot (Aldebaran/SoftBank). You have a voice and a body; you can move, gesture, and run code on the robot.\n\n"
+    "WAKE WORD: When the user's message is exactly 'Jarvis' (they just said the wake word to start the session), respond with only 'Yes?' and nothing else. No greeting, no 'how can I help'—just 'Yes?'.\n\n"
     "LOCATION AND TIME: You are in Bellevue, Washington. Use Pacific time (Pacific Coast / America/Los_Angeles) for the current date and time when relevant.\n\n"
     "LANGUAGE: Speak in English, Chinese (中文) as appropriate—match the user's language or use English by default. Keep replies short.\n\n"
     "TOOLS — use them when relevant:\n"
@@ -141,7 +171,7 @@ BASE_INSTRUCTIONS = (
     "• searchRobotActions: Call when the user wants to know what actions you can do (e.g. movements, gestures, speech) or when you need to look up available robot actions by keyword or category.\n"
     "• writeCode: Call when the user wants you to do something programmable on the robot (e.g. dance, wave, walk, say something specific, perform a sequence). Provide a clear coding_prompt describing the behavior. Code is generated for NAO (Python/naoqi).\n"
     "• executeCode: Call only after writeCode has been used. When the user says to run, execute, or perform the code (e.g. 'run it', 'execute', 'do it'), call executeCode to send the last generated code to the robot. Do not call executeCode before writeCode.\n"
-    "• saveCode: Call when the user explicitly asks to save the code to a file; provide code and filename.\n"
+    "• saveCode: Call when the user asks to save the code. Provide filename (e.g. wave_hand); omit code to save the last generated/run code from writeCode.\n"
     "• updateMyName: Call when the user says their name (e.g. 'My name is Jason', 'Call me Sarah'). Updates the current speaker's name in the database. Use the name they give.\n"
     "• goodbye: Call when the user clearly ends the conversation (e.g. goodbye, see you later, that's all for now, I'm done). Do not call for brief pauses or 'one more thing'.\n\n"
     "RULES: Do not make up facts. Be concise. If unsure, say so."
@@ -245,20 +275,20 @@ def _get_extra_tools():
             ),
             FunctionDeclaration(
                 name="saveCode",
-                description="Save code to a file or named snippet in the project.",
+                description="Save code to the robot actions database (code_db). If code is omitted, the last generated/run code from writeCode is saved. Requires filename (e.g. wave_hand or wave_hand.py).",
                 parameters=Schema(
                     type=SchemaType.OBJECT,
                     properties={
                         "code": Schema(
                             type=SchemaType.STRING,
-                            description="The code to save.",
+                            description="The code to save. Optional: if omitted, the last code from writeCode is saved.",
                         ),
                         "filename": Schema(
                             type=SchemaType.STRING,
-                            description="Filename or path to save the code to.",
+                            description="Action name or filename to save as (e.g. wave_hand, dance_disco.py).",
                         ),
                     },
-                    required=["code", "filename"],
+                    required=["filename"],
                 ),
             ),
             FunctionDeclaration(
@@ -548,7 +578,7 @@ class RealtimeAgent:
                             {"name": "searchRobotActions", "description": "Search for available robot actions.", "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING"}, "category": {"type": "STRING"}}, "required": ["query"]}},
                             {"name": "writeCode", "description": "Write or generate code for NAO V4 robot.", "parameters": {"type": "OBJECT", "properties": {"coding_prompt": {"type": "STRING"}, "prompt": {"type": "STRING"}, "language": {"type": "STRING"}}, "required": []}},
                             {"name": "executeCode", "description": "Send last_code to robot via TCP. Requires code_status True (call writeCode first).", "parameters": {"type": "OBJECT", "properties": {"code": {"type": "STRING"}, "language": {"type": "STRING"}}, "required": []}},
-                            {"name": "saveCode", "description": "Save code to a file.", "parameters": {"type": "OBJECT", "properties": {"code": {"type": "STRING"}, "filename": {"type": "STRING"}}, "required": ["code", "filename"]}},
+                            {"name": "saveCode", "description": "Save code to robot actions DB; omit code to save last run code.", "parameters": {"type": "OBJECT", "properties": {"code": {"type": "STRING"}, "filename": {"type": "STRING"}}, "required": ["filename"]}},
                             {"name": "updateMyName", "description": "Update the current speaker's name in the database. Call when the user says their name.", "parameters": {"type": "OBJECT", "properties": {"name": {"type": "STRING", "description": "The name the user wants to be called."}}, "required": ["name"]}},
                             {"name": "goodbye", "description": "End the conversation when the user says goodbye or wants to end the session. Session will close; user can say Jarvis again to restart.", "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
                         ]
@@ -560,8 +590,6 @@ class RealtimeAgent:
         extra_tool = _get_extra_tools()
         tools = [t for t in [google_search_tool, memory_tool, extra_tool] if t is not None]
         return LiveConnectConfig(
-            output_audio_transcription={},
-            input_audio_transcription={},
             response_modalities=["AUDIO"],
             speech_config=SpeechConfig(
                 voice_config=VoiceConfig(
@@ -642,18 +670,32 @@ class RealtimeAgent:
                 )
                 function_responses.append(func_response)
             elif name == "searchRobotActions":
-                query = args.get("query", "")
-                category = args.get("category", "")
-                # Placeholder result
-                result = {
-                    "actions": [
-                        {"id": "move_forward", "name": "Move Forward", "category": "movement", "description": "[placeholder] Move robot forward."},
-                        {"id": "grasp", "name": "Grasp", "category": "manipulation", "description": "[placeholder] Grasp object."},
-                        {"id": "speak", "name": "Speak", "category": "speech", "description": "[placeholder] Speak text."},
-                    ],
-                    "query": query,
-                    "category": category or None,
-                }
+                query = (args.get("query") or "").strip()
+                category_filter = (args.get("category") or "").strip().lower()
+                result = {"actions": [], "query": query, "category": category_filter or None}
+                action_mgr = _get_action_manager_instance()
+                if action_mgr and query:
+                    try:
+                        hits = await asyncio.to_thread(action_mgr.search_actions, query)
+                        for item in hits:
+                            if category_filter and not (
+                                category_filter in (item.get("name") or "").lower()
+                                or any(category_filter in (k or "").lower() for k in item.get("keywords") or [])
+                            ):
+                                continue
+                            result["actions"].append({
+                                "id": item.get("id", item.get("name", "")),
+                                "name": item.get("name", ""),
+                                "category": (item.get("keywords") or ["general"])[0] if item.get("keywords") else "general",
+                                "description": item.get("message") or ", ".join(item.get("keywords") or []),
+                            })
+                    except Exception as e:
+                        print(f"[DEBUG] searchRobotActions error: {e}")
+                        result["message"] = str(e)
+                elif not query:
+                    result["message"] = "No search query provided."
+                else:
+                    result["message"] = "Robot actions database not configured (GITHUB_TOKEN, GITHUB_REPO)."
                 function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
             elif name == "writeCode":
                 coding_prompt = args.get("coding_prompt") or args.get("prompt", "")
@@ -712,16 +754,39 @@ class RealtimeAgent:
                     }
                     function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
             elif name == "saveCode":
-                code = args.get("code", "")
-                filename = args.get("filename", "")
-                # Placeholder result
-                result = {
-                    "saved": True,
-                    "filename": filename,
-                    "message": "[placeholder] Code saved successfully",
-                    "bytes_written": len(code.encode("utf-8")),
-                }
-                function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
+                code = (args.get("code") or "").strip() or last_code
+                filename = (args.get("filename") or "").strip()
+                result = {"saved": False, "filename": filename, "message": "", "bytes_written": 0}
+                if not filename:
+                    result["message"] = "No filename provided. Provide a name (e.g. wave_hand or wave_hand.py) to save the action."
+                    function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
+                elif not code:
+                    result["message"] = "No code to save. Generate code with writeCode first, or pass the code to save."
+                    function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
+                else:
+                    action_mgr = _get_action_manager_instance()
+                    if not action_mgr:
+                        result["message"] = "Robot actions database not configured (GITHUB_TOKEN, GITHUB_REPO)."
+                        function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
+                    else:
+                        action_name = os.path.basename(filename).replace(".py", "").strip() or "unnamed_action"
+                        keywords = [k for k in action_name.replace("-", "_").split("_") if k]
+                        try:
+                            saved = await asyncio.to_thread(
+                                action_mgr.save_action,
+                                action_name,
+                                code,
+                                keywords,
+                                "Saved via Jarvis",
+                            )
+                            result["saved"] = True
+                            result["message"] = f"Action '{action_name}' saved to code_db."
+                            result["bytes_written"] = len(code.encode("utf-8"))
+                            result["path"] = saved.get("path", f"actions/{action_name}.py")
+                        except Exception as e:
+                            print(f"[DEBUG] saveCode error: {e}")
+                            result["message"] = str(e)
+                        function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
             elif name == "goodbye":
                 self._request_goodbye_close = True
                 

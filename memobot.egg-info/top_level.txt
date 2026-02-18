@@ -1,3 +1,4 @@
+code_db
 memobot
 sdk
 tests

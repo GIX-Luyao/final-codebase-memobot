@@ -55,6 +55,98 @@ except Exception as e:
 # --- IMPORT ORIGINAL SERVER LOGIC (sockets, ports, recv_exact, audio_tx_queue) ---
 import memobot.robot.mac_master_v3 as original_server
 
+# Real-time spectral denoising (fan hum): stream first 0.7s as noise profile, then
+# denoise with logic identical to tests/test_audio_denoise.py (noisereduce, no file I/O).
+try:
+    import noisereduce as nr
+    _nr_available = True
+except ImportError:
+    nr = None
+    _nr_available = False
+
+
+def _denoise_audio(
+    audio: np.ndarray,
+    sr: int,
+    *,
+    noise_part: np.ndarray | None = None,
+    noise_duration_sec: float = 0.7,
+    prop_decrease: float = 0.97,
+    normalize_peak: float = 0.9,
+    return_float: bool = False,
+    n_fft: int = 4096,
+) -> np.ndarray:
+    """Denoise in memory via spectral gating (same as test_audio_denoise.denoise_audio)."""
+    if not _nr_available:
+        return audio
+    if audio.ndim == 1:
+        data = audio.astype(np.float64) if audio.dtype != np.float64 else audio.copy()
+        if data.dtype == np.int16:
+            data = data / 32768.0
+        data = data[np.newaxis, :]
+        single_channel = True
+    else:
+        data = audio.astype(np.float64) if audio.dtype != np.float64 else audio.copy()
+        if audio.dtype == np.int16:
+            data = data / 32768.0
+        data = data.T
+        single_channel = False
+    if noise_part is not None:
+        if noise_part.ndim == 1:
+            npart = noise_part.astype(np.float64)
+            if noise_part.dtype == np.int16:
+                npart = npart / 32768.0
+            npart = npart[np.newaxis, :]
+        else:
+            npart = noise_part.T.astype(np.float64)
+            if noise_part.dtype == np.int16:
+                npart = npart / 32768.0
+    else:
+        n_noise = min(int(sr * noise_duration_sec), data.shape[1])
+        npart = data[:, :n_noise]
+    reduced = nr.reduce_noise(
+        y=data, sr=sr, y_noise=npart,
+        prop_decrease=prop_decrease, stationary=True, n_fft=n_fft,
+    )
+    max_val = np.max(np.abs(reduced))
+    if max_val > 0:
+        enhanced = reduced / max_val * normalize_peak
+    else:
+        enhanced = reduced
+    if not return_float:
+        enhanced = (enhanced * 32767).astype(np.int16)
+    if single_channel:
+        out = enhanced[0]
+    else:
+        out = enhanced.T
+    return out
+
+
+def _denoise_audio_bytes(
+    audio_bytes: bytes,
+    sample_rate: int,
+    *,
+    channels: int = 1,
+    sample_width: int = 2,
+    **kwargs: object,
+) -> bytes:
+    """Denoise raw PCM bytes (same as test_audio_denoise.denoise_audio_bytes)."""
+    if sample_width != 2:
+        raise ValueError("Only sample_width=2 (int16) is supported")
+    frame_size = channels * sample_width
+    if len(audio_bytes) % frame_size != 0:
+        audio_bytes = audio_bytes[: (len(audio_bytes) // frame_size) * frame_size]
+    samples = np.frombuffer(audio_bytes, dtype=np.int16)
+    if channels > 1:
+        audio = samples.reshape(-1, channels)
+    else:
+        audio = samples
+    out = _denoise_audio(audio, sample_rate, return_float=False, **kwargs)
+    return out.astype(np.int16).tobytes()
+
+
+DENOISING_AVAILABLE = _nr_available
+
 # --- GEMINI LIVE (Google) REALTIME AGENT ---
 try:
     from memobot.query_pipeline.gemini_client import ServerRealtimeAgent as GeminiServerAgent, set_code_command_socket
@@ -112,8 +204,9 @@ INGEST_MEMORIES = False
 # Code command channel: mock/robot client connects here to receive executed code (length-prefixed)
 PORT_CODE_TX = 50009
 
-# DSP: fan noise reduction (bandpass from v3) + mic sensitivity for distant speech
+# DSP: fan noise reduction (bandpass from v3) + spectral denoise (first 0.7s stream) + mic gain
 MIC_INPUT_GAIN = 4.0  # Boost mic level (v3 uses 3.0); higher helps hear people further away
+ROBOT_AUDIO_RATE = 16000  # Sample rate for real-time denoising
 
 # GLOBAL: Keep track of the active code socket to send instant WAKE commands
 _active_code_conn = None
@@ -202,17 +295,55 @@ class ClipRecorder:
                 threading.Thread(
                     target=self._finalize_clip,
                     args=(frames_to_save, user_bytes_to_save, tts_chunks_to_save, clip_start_time),
+                    kwargs={"duration_sec": None},
                     daemon=True,
                 ).start()
 
-    def _finalize_clip(self, frames, user_bytes, tts_chunks, clip_start):
+    def stop_recording_and_finalize(self):
+        """Stop recording and finalize the current clip (whatever length) and run ingest. Idempotent."""
+        with self.lock:
+            if not self.recording_started:
+                return
+            frames_to_save = list(self.video_buffer)
+            user_bytes_to_save = bytes(self.user_audio_bytes)
+            tts_chunks_to_save = list(self.tts_audio_chunks)
+            clip_start_time = self.start_time
+            self.video_buffer = []
+            self.user_audio_bytes = bytearray()
+            self.tts_audio_chunks = []
+            self.recording_started = False
+            self.start_time = None
+        if frames_to_save or user_bytes_to_save or tts_chunks_to_save:
+            # Compute actual duration from buffers (clip may be shorter than 30s)
+            duration_from_video = len(frames_to_save) / self.fps if frames_to_save else 0
+            duration_from_audio = len(user_bytes_to_save) / (self.sample_rate * 2) if user_bytes_to_save else 0
+            duration_sec = max(duration_from_video, duration_from_audio, 0.1)
+            if not frames_to_save:
+                # Need at least one frame for video file; skip finalize if no video
+                print("[Recorder] Session ended with no video frames; skipping clip save.")
+                return
+            threading.Thread(
+                target=self._finalize_clip,
+                args=(frames_to_save, user_bytes_to_save, tts_chunks_to_save, clip_start_time),
+                kwargs={"duration_sec": duration_sec},
+                daemon=True,
+            ).start()
+            print("[Recorder] Session ended; finalizing current clip and running ingest.")
+        else:
+            print("[Recorder] Session ended; no buffered clip to save.")
+
+    def _finalize_clip(self, frames, user_bytes, tts_chunks, clip_start, duration_sec=None):
+        if duration_sec is None:
+            duration_sec = self.clip_duration
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         v_tmp = str(DATA_DIR / f"v_tmp_{ts}.mp4")
         a_tmp = str(DATA_DIR / f"a_tmp_{ts}.wav")
         final_path = str(DATA_DIR / f"clip_{ts}.mp4")
 
         try:
-            total_samples = int(self.clip_duration * self.sample_rate)
+            total_samples = int(duration_sec * self.sample_rate)
+            if total_samples <= 0:
+                return
             
             # 1. The Mixing Canvas
             mixed_track = np.zeros(total_samples, dtype=np.int32)
@@ -452,7 +583,7 @@ def recognize_user_from_frame(frame):
 # --- PATCHED NETWORKING ---
 
 def patched_receive_audio_from_robot():
-    """Reads audio from socket in a loop; applies fan noise reduction (bandpass) + mic gain; feeds recorder, VAD, API."""
+    """Reads audio from socket. Porcupine (wake word) gets raw audio only. When session is connected, applies bandpass + spectral denoise + gain and feeds recorder, VAD, TalkNet, API."""
     global _last_recognition_request_time, _user_audio_hold_until, _active_code_conn
 
     print(f"[Audio RX] Listening on {original_server.PORT_AUDIO_RX}...")
@@ -470,6 +601,14 @@ def patched_receive_audio_from_robot():
     if getattr(noise_filter, "enabled", False):
         print("[Audio RX] Fan noise filter enabled (bandpass 300–4000 Hz).")
     print(f"[Audio RX] Mic input gain: {MIC_INPUT_GAIN}x (for distant speech).")
+
+    # Streaming noise profile: first 0.7s of session audio used as fan noise profile (same as test_audio_denoise).
+    NOISE_DURATION_SEC = 0.7
+    noise_profile_bytes_needed = int(ROBOT_AUDIO_RATE * NOISE_DURATION_SEC * 2)  # mono int16
+    noise_buffer = bytearray()
+    noise_part = None  # np.ndarray set once we have 0.7s
+    if DENOISING_AVAILABLE and original_server.ROBOT_RATE == ROBOT_AUDIO_RATE:
+        print(f"[Audio RX] Spectral denoising: will use first {NOISE_DURATION_SEC}s of stream as fan noise profile.")
 
     vad_model = None
     if SILERO_VAD_AVAILABLE:
@@ -507,29 +646,49 @@ def patched_receive_audio_from_robot():
             if not data:
                 break
 
-            # 1. Fan noise reduction (bandpass)
-            data = noise_filter.process(data)
-            # 2. Mic sensitivity boost for distant speakers
-            data = original_server.apply_gain(data, MIC_INPUT_GAIN)
+            raw_data = data  # Porcupine gets raw audio only (no denoising)
 
-            recorder.add_audio(data)
-            
-            # TalkNet: Update audio ring buffer
-            if TALKNET_AVAILABLE:
-                audio_np = np.frombuffer(data, dtype=np.int16)
-                _audio_ring_buffer.extend(audio_np)
-
-            # --- Logic: Wake Word vs Active Session ---
-            
-            # Check if session is active
+            # Check if session is active — only then apply denoising and feed recorder/VAD/API
             session_active = (
-                original_server.use_realtime and 
-                original_server.agent_instance and 
+                original_server.use_realtime and
+                original_server.agent_instance and
                 getattr(original_server.agent_instance, "session_connected", False)
             )
 
             if session_active:
-                # Active Session: Feed audio to realtime agent
+                # Connected: apply full pipeline (bandpass → spectral denoise → gain), then feed downstream
+                data = noise_filter.process(data)
+                # Build noise profile from first 0.7s of stream (fan detection), then denoise identically to test_audio_denoise
+                if DENOISING_AVAILABLE and original_server.ROBOT_RATE == ROBOT_AUDIO_RATE:
+                    if noise_part is None:
+                        noise_buffer.extend(data)
+                        if len(noise_buffer) >= noise_profile_bytes_needed:
+                            raw_noise = bytes(noise_buffer[:noise_profile_bytes_needed])
+                            noise_part = np.frombuffer(raw_noise, dtype=np.int16)
+                            noise_buffer = bytearray()
+                            print("[Audio RX] Fan noise profile ready (0.7s). Spectral denoising enabled.")
+                    if noise_part is not None and DENOISING_AVAILABLE:
+                        try:
+                            data = _denoise_audio_bytes(
+                                data,
+                                ROBOT_AUDIO_RATE,
+                                channels=1,
+                                noise_part=noise_part,
+                                noise_duration_sec=NOISE_DURATION_SEC,
+                                prop_decrease=0.97,
+                                normalize_peak=0.9,
+                                n_fft=8192,
+                            )
+                        except Exception:
+                            pass
+                data = original_server.apply_gain(data, MIC_INPUT_GAIN)
+
+                recorder.add_audio(data)
+                if TALKNET_AVAILABLE:
+                    audio_np = np.frombuffer(data, dtype=np.int16)
+                    _audio_ring_buffer.extend(audio_np)
+
+                # Feed processed audio to realtime agent
                 if not original_server.agent_instance.is_robot_speaking():
                     with _user_audio_buffer_lock:
                         now = time.time()
@@ -541,11 +700,34 @@ def patched_receive_audio_from_robot():
                                 _user_audio_buffer.clear()
                                 original_server.agent_instance.ingest_robot_audio(flush)
                             original_server.agent_instance.ingest_robot_audio(data)
-            
+
+                # VAD on processed audio (for face recognition on speech start)
+                if vad_model is not None:
+                    vad_buffer.extend(data)
+                    chunk_bytes = VAD_CHUNK_SAMPLES * 2  # 16-bit
+                    while len(vad_buffer) >= chunk_bytes:
+                        chunk = bytes(vad_buffer[:chunk_bytes])
+                        del vad_buffer[:chunk_bytes]
+                        audio_f32 = _int16_to_float32(chunk)
+                        try:
+                            confidence = vad_model(torch.from_numpy(audio_f32), 16000).item()
+                        except Exception:
+                            confidence = 0.0
+                        in_speech = confidence >= VAD_SPEECH_THRESHOLD
+
+                        if not in_speech_prev and in_speech:
+                            with _last_recognition_request_lock:
+                                if (time.time() - _last_recognition_request_time) >= VAD_RECOGNITION_COOLDOWN:
+                                    _recognition_requested.set()
+                                    _last_recognition_request_time = time.time()
+                                    with _user_audio_buffer_lock:
+                                        _user_audio_hold_until = time.time() + USER_AUDIO_HOLD_AFTER_SPEECH_START
+                        in_speech_prev = in_speech
+
             else:
-                # Idle: stream audio through Porcupine for wake word detection
+                # Idle: feed only raw audio to Porcupine for wake word (no denoising)
                 if porcupine is not None and porcupine_frame_bytes > 0:
-                    porcupine_buffer.extend(data)
+                    porcupine_buffer.extend(raw_data)
                     while len(porcupine_buffer) >= porcupine_frame_bytes:
                         chunk = bytes(porcupine_buffer[:porcupine_frame_bytes])
                         del porcupine_buffer[:porcupine_frame_bytes]
@@ -577,29 +759,6 @@ def patched_receive_audio_from_robot():
                             print(f"[Wake Word] process error: {e}")
                     if len(porcupine_buffer) > porcupine_frame_bytes * 4:
                         porcupine_buffer = porcupine_buffer[-porcupine_frame_bytes:]
-
-            # VAD: run on user mic only (for face recognition on speech start)
-            if vad_model is not None:
-                vad_buffer.extend(data)
-                chunk_bytes = VAD_CHUNK_SAMPLES * 2  # 16-bit
-                while len(vad_buffer) >= chunk_bytes:
-                    chunk = bytes(vad_buffer[:chunk_bytes])
-                    del vad_buffer[:chunk_bytes]
-                    audio_f32 = _int16_to_float32(chunk)
-                    try:
-                        confidence = vad_model(torch.from_numpy(audio_f32), 16000).item()
-                    except Exception:
-                        confidence = 0.0
-                    in_speech = confidence >= VAD_SPEECH_THRESHOLD
-
-                    if not in_speech_prev and in_speech:
-                        with _last_recognition_request_lock:
-                            if (time.time() - _last_recognition_request_time) >= VAD_RECOGNITION_COOLDOWN:
-                                _recognition_requested.set()
-                                _last_recognition_request_time = time.time()
-                                with _user_audio_buffer_lock:
-                                    _user_audio_hold_until = time.time() + USER_AUDIO_HOLD_AFTER_SPEECH_START
-                    in_speech_prev = in_speech
     except Exception as e:
         print(f"[Audio RX] Error: {e}")
     finally:
@@ -851,15 +1010,28 @@ async def main():
     # Main Loop
     global _last_speaker_sent_to_api, _latest_frame
     rec_started = False
+    session_was_connected = False
     try:
         while True:
             await asyncio.sleep(0.001)
 
-            # Start recorder only after connection
-            if not rec_started and original_server.use_realtime and original_server.agent_instance:
-                if getattr(original_server.agent_instance, "session_connected", False):
-                    recorder.start_recording()
-                    rec_started = True
+            session_connected = (
+                original_server.use_realtime
+                and original_server.agent_instance
+                and getattr(original_server.agent_instance, "session_connected", False)
+            )
+
+            # Start recorder only when Gemini is connected
+            if not rec_started and session_connected:
+                recorder.start_recording()
+                rec_started = True
+                session_was_connected = True
+
+            # When connection drops: finalize current clip (any length) and run ingest, then stop recording
+            if rec_started and session_was_connected and not session_connected:
+                recorder.stop_recording_and_finalize()
+                rec_started = False
+                session_was_connected = False
 
             recorder.check_and_save()
 
@@ -910,7 +1082,9 @@ async def main():
                     _latest_frame = frame.copy()
                     if TALKNET_AVAILABLE:
                         _video_ring_buffer.append(frame.copy())
-                recorder.add_video(frame)
+                # Only record video when Gemini is connected (no recording when disconnected)
+                if session_connected:
+                    recorder.add_video(frame)
                 cv2.imshow("Server View", frame)
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
