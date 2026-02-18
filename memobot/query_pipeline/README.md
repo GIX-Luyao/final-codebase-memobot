@@ -76,3 +76,5 @@ Uses `query_pipeline/image.png` by default. It prints the matched person record 
 
 ## To run Query:
 python query.py --person-id "ed26e82d-6c39-4ebd-b73b-91f07ed8a8f1" "Where do i go to school?"
+
+--mode realtime --user-name Jason --person-id user_jason_001
