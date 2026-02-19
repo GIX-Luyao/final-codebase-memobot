@@ -421,7 +421,7 @@ def merge_and_upsert(
             "person_ids": person_ids,
             "audio_dialogue": audio_dialogue,
             "memobot_group_id": memobot_group_id,
-            "gemini_understanding": gemini_understanding[:40_000] if gemini_understanding else "",  # Pinecone metadata limit
+            "gemini_understanding": gemini_understanding or "",
         }
         vectors_to_upsert.append((vector_id, emb["embedding"], metadata))
 
