@@ -102,3 +102,4 @@ torch
 
 # ---------- Wake word (mac_master_v9); free key at https://console.picovoice.ai/ ----------
 pvporcupine>=3.0.0
+sounddevice

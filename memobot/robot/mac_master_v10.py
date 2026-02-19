@@ -99,6 +99,15 @@ except ImportError:
     PORCUPINE_AVAILABLE = False
     print("[Warning] pvporcupine not found. Install with: pip install pvporcupine")
 
+# System microphone (external mic / headphone jack) for incoming audio
+try:
+    import sounddevice as sd
+    SOUNDDEVICE_AVAILABLE = True
+except ImportError:
+    sd = None
+    SOUNDDEVICE_AVAILABLE = False
+    print("[Warning] sounddevice not found. Install with: pip install sounddevice")
+
 # --- CONFIGURATION ---
 ROBOT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = ROBOT_DIR.parent
@@ -515,15 +524,50 @@ def recognize_user_from_frame(frame):
 
 # --- PATCHED NETWORKING ---
 
+def _robot_audio_socket_keeper(sock):
+    """Accept connections on robot audio port and read/discard data so the client can connect and send without blocking. Audio is not used; actual input comes from system mic."""
+    while True:
+        try:
+            conn, addr = sock.accept()
+            try:
+                while True:
+                    data = conn.recv(4096)
+                    if not data:
+                        break
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except OSError as e:
+            if sock.fileno() == -1:
+                return
+            print(f"[Audio RX] Socket keeper: {e}")
+        except Exception as e:
+            print(f"[Audio RX] Socket keeper: {e}")
+
+
 def patched_receive_audio_from_robot():
-    """Reads audio from socket. Porcupine (wake word) gets raw audio only. When session is connected, applies bandpass + spectral denoise + gain and feeds recorder, VAD, TalkNet, API."""
+    """Uses the system microphone (external mic / headphone jack) for all incoming audio. Robot audio port is still opened so the client can connect (data is discarded). Porcupine (wake word) gets raw mic audio. When session is connected, applies bandpass + spectral denoise + gain and feeds recorder, VAD, TalkNet, API."""
     global _last_recognition_request_time, _user_audio_hold_until, _active_code_conn
 
-    print(f"[Audio RX] Listening on {original_server.PORT_AUDIO_RX}...")
+    if not SOUNDDEVICE_AVAILABLE or sd is None:
+        print("[Audio RX] ERROR: sounddevice is required for system mic. Install with: pip install sounddevice")
+        return
+
+    # Keep robot audio port open so client can connect (client code cannot be changed)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((original_server.HOST, original_server.PORT_AUDIO_RX))
     sock.listen(1)
+    print(f"[Audio RX] Listening on {original_server.PORT_AUDIO_RX} (robot client may connect; audio from this port is not used).")
+    threading.Thread(target=_robot_audio_socket_keeper, args=(sock,), daemon=True).start()
+
+    # Actual audio input: system default microphone (e.g. headphone jack mic)
+    MIC_BLOCKSIZE = 2048  # samples per read (2048 @ 16kHz ≈ 128ms), 4096 bytes
+    print(f"[Audio RX] Using system microphone (default input device) at {ROBOT_AUDIO_RATE} Hz. Blocksize={MIC_BLOCKSIZE} samples.")
 
     # Fan noise reduction: bandpass 300Hz–4kHz (removes NAO fan rumble + hiss). Uses v3's RealtimeFilter.
     noise_filter = original_server.RealtimeFilter(
@@ -572,13 +616,29 @@ def patched_receive_audio_from_robot():
     porcupine_frame_bytes = (porcupine.frame_length * 2) if porcupine is not None else 0
     in_speech_prev = False
 
-    conn, _ = sock.accept()
+    try:
+        mic_stream = sd.InputStream(
+            samplerate=ROBOT_AUDIO_RATE,
+            channels=1,
+            dtype="int16",
+            blocksize=MIC_BLOCKSIZE,
+        )
+        mic_stream.start()
+    except Exception as e:
+        print(f"[Audio RX] Failed to open system microphone: {e}")
+        return
+
     try:
         while True:
-            data = conn.recv(4096)
-            if not data:
+            try:
+                indata, _ = mic_stream.read(MIC_BLOCKSIZE)
+            except Exception as e:
+                print(f"[Audio RX] Mic read error: {e}")
                 break
-
+            if indata is None or indata.size == 0:
+                continue
+            # (samples, channels) -> flatten and to bytes
+            data = indata.reshape(-1).tobytes()
             raw_data = data  # Porcupine gets raw audio only (no denoising)
 
             # Check if session is active — only then apply denoising and feed recorder/VAD/API
@@ -700,8 +760,15 @@ def patched_receive_audio_from_robot():
                 porcupine.delete()
             except Exception:
                 pass
-        conn.close()
-        sock.close()
+        try:
+            mic_stream.stop()
+            mic_stream.close()
+        except Exception:
+            pass
+        try:
+            sock.close()
+        except Exception:
+            pass
 
 def patched_send_audio_to_robot():
     """Reads from Queue -> Sends to Robot -> Feeds Recorder (Timestamped)."""
