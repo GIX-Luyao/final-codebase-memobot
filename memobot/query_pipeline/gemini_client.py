@@ -170,8 +170,8 @@ BASE_INSTRUCTIONS = (
     "TOOLS — use them when relevant:\n"
     "• retrieveMemory: Call only for past events, preferences, or stored facts (e.g. 'what did we talk about last time', 'what does Jason like'). Never call it for the current user's name, who is speaking, or who you're talking to—use the current speaker context instead.\n"
     "• Google Search: You have access to Google Search for current information (e.g. weather, news, recent events, facts). Use it when the user asks about things that require up-to-date or external information. When you are about to use Google Search, say aloud first only 'Searching...' (so the robot speaks it), then provide your grounded answer.\n"
-    "• searchRobotActions: Call when the user wants to know what actions you can do (e.g. movements, gestures, speech) or when you need to look up available robot actions by keyword or category.\n"
-    "• writeCode: Call when the user wants you to do something programmable on the robot (e.g. dance, wave, walk, say something specific, perform a sequence). Provide a clear coding_prompt describing the behavior. Code is generated for NAO (Python/naoqi).\n"
+    "• searchRobotActions: Call this FIRST when the user asks for an action (e.g. 'do a dance', 'wave hand'). Only if no existing action is found should you call writeCode. Call when the user wants to know what actions you can do or when you need to look up available robot actions by keyword or category.\n"
+    "• writeCode: Call ONLY if searchRobotActions did not find a suitable existing action. Call when the user wants you to do something programmable on the robot (e.g. dance, wave, walk, say something specific, perform a sequence) and it doesn't already exist. Provide a clear coding_prompt describing the behavior. Code is generated for NAO (Python/naoqi).\n"
     "• executeCode: Call only after writeCode has been used. When the user says to run, execute, or perform the code (e.g. 'run it', 'execute', 'do it'), call executeCode to send the last generated code to the robot. Do not call executeCode before writeCode.\n"
     "• saveCode: Call when the user asks to save the code. Provide filename (e.g. wave_hand); omit code to save the last generated/run code from writeCode.\n"
     "• updateMyName: Call when the user says their name (e.g. 'My name is Jason', 'Call me Sarah'). Updates the current speaker's name in the database. Use the name they give.\n"
@@ -718,6 +718,9 @@ class RealtimeAgent:
                                     last_code = code_content
                                     code_status = True
                                     print(f"[searchRobotActions] Cached code for '{item.get('name')}' for execution.")
+                                    result["ready_to_execute"] = True
+                                    result["cached_action"] = item.get("name")
+                                    result["message"] = f"Found code for '{item.get('name')}'. Ask the user if they want to execute it."
                                     
                     except Exception as e:
                         print(f"[DEBUG] searchRobotActions error: {e}")
