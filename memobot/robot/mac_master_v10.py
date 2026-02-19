@@ -616,16 +616,54 @@ def patched_receive_audio_from_robot():
     porcupine_frame_bytes = (porcupine.frame_length * 2) if porcupine is not None else 0
     in_speech_prev = False
 
-    try:
-        mic_stream = sd.InputStream(
+    # Try to open microphone stream with fallback logic for Linux/Ubuntu
+    mic_stream = None
+
+    def _try_open_stream(device_idx=None):
+        s = sd.InputStream(
             samplerate=ROBOT_AUDIO_RATE,
             channels=1,
             dtype="int16",
             blocksize=MIC_BLOCKSIZE,
+            device=device_idx,
         )
-        mic_stream.start()
+        s.start()
+        return s
+
+    # 1. First Priority: Default Device (Standard behavior, preferred for Mac)
+    try:
+        mic_stream = _try_open_stream(None)
+        print("[Audio RX] Started system microphone (default device).")
     except Exception as e:
-        print(f"[Audio RX] Failed to open system microphone: {e}")
+        print(f"[Audio RX] Default mic failed: {e}. Searching for fallback devices (Linux compatibility)...")
+        # 2. Linux/Ubuntu Fallback: Search for valid inputs
+        try:
+            devices = sd.query_devices()
+            candidates = []
+            for i, d in enumerate(devices):
+                if d['max_input_channels'] > 0:
+                    name = d.get('name', '').lower()
+                    score = 0
+                    if 'usb' in name: score += 10
+                    if 'default' in name: score += 5
+                    if 'pulse' in name: score += 4
+                    if 'sysdefault' in name: score += 3
+                    candidates.append((score, i, d.get('name', 'Unknown')))
+            
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            for _, idx, name in candidates:
+                try:
+                    print(f"[Audio RX] Fallback: Trying device {idx} ('{name}')...")
+                    mic_stream = _try_open_stream(idx)
+                    print(f"[Audio RX] Success! Using device {idx}: {name}")
+                    break
+                except Exception as ex:
+                    print(f"[Audio RX] Device {idx} failed: {ex}")
+        except Exception as e2:
+             print(f"[Audio RX] Device enumeration failed: {e2}")
+
+    if mic_stream is None:
+        print("[Audio RX] CRITICAL: Failed to open any microphone input. Check system settings.")
         return
 
     try:
