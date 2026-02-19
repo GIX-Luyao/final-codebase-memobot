@@ -309,5 +309,5 @@ Run with Ingest:
 python memobot/robot/mac_master_v7.py --realtime --ingest
 
 Without Ingest:
-python memobot/robot/mac_master_v6.py --realtime
+python memobot/robot/mac_master_v10.py --realtime
 or: python -m memobot.robot.mac_master_v8 --realtime

@@ -155,6 +155,12 @@ class ActionManager:
             in_keywords = any(query in k.lower() for k in item["keywords"])
             
             if in_name or in_keywords:
+                # Fetch code content for the result
+                try:
+                    code_content = self.get_action_code(item["name"])
+                    item["code"] = code_content
+                except Exception:
+                    item["code"] = ""
                 results.append(item)
                 
         return results

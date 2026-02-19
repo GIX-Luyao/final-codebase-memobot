@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
 import sys
 import os
+from pathlib import Path
+
+# Add project root to sys.path immediately to ensure imports work
+FILE_PATH = Path(__file__).resolve()
+# memobot/robot/mac_master_v10.py -> memobot/robot -> memobot -> root
+PROJECT_ROOT = FILE_PATH.parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import time
 import queue
 import cv2

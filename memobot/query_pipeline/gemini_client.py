@@ -219,20 +219,34 @@ def _get_extra_tools():
         function_declarations=[
             FunctionDeclaration(
                 name="searchRobotActions",
-                description="Search for available robot actions (e.g. move, grasp, speak) by keyword or category.",
+                description="Search for available robot actions (e.g. move, grasp, speak) by keyword or category. If query is omitted, lists all available actions.",
                 parameters=Schema(
                     type=SchemaType.OBJECT,
                     properties={
                         "query": Schema(
                             type=SchemaType.STRING,
-                            description="Search query for robot actions.",
+                            description="Search query for robot actions. Leave empty to list all actions.",
                         ),
                         "category": Schema(
                             type=SchemaType.STRING,
                             description="Optional category to filter actions (e.g. movement, manipulation, speech).",
                         ),
                     },
-                    required=["query"],
+                    required=[],
+                ),
+            ),
+            FunctionDeclaration(
+                name="deleteRobotAction",
+                description="Delete a robot action from the database. Requires the action name.",
+                parameters=Schema(
+                    type=SchemaType.OBJECT,
+                    properties={
+                        "name": Schema(
+                            type=SchemaType.STRING,
+                            description="The name of the action to delete (e.g. wave_hand).",
+                        ),
+                    },
+                    required=["name"],
                 ),
             ),
             FunctionDeclaration(
@@ -577,7 +591,8 @@ class RealtimeAgent:
                     },
                     {
                         "function_declarations": [
-                            {"name": "searchRobotActions", "description": "Search for available robot actions.", "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING"}, "category": {"type": "STRING"}}, "required": ["query"]}},
+                            {"name": "searchRobotActions", "description": "Search for available robot actions. If query is omitted, lists all available actions.", "parameters": {"type": "OBJECT", "properties": {"query": {"type": "STRING"}, "category": {"type": "STRING"}}, "required": []}},
+                            {"name": "deleteRobotAction", "description": "Delete a robot action from the database.", "parameters": {"type": "OBJECT", "properties": {"name": {"type": "STRING"}}, "required": ["name"]}},
                             {"name": "writeCode", "description": "Write or generate code for NAO V4 robot.", "parameters": {"type": "OBJECT", "properties": {"coding_prompt": {"type": "STRING"}, "prompt": {"type": "STRING"}, "language": {"type": "STRING"}}, "required": []}},
                             {"name": "executeCode", "description": "Send last_code to robot via TCP. Requires code_status True (call writeCode first).", "parameters": {"type": "OBJECT", "properties": {"code": {"type": "STRING"}, "language": {"type": "STRING"}}, "required": []}},
                             {"name": "saveCode", "description": "Save code to robot actions DB; omit code to save last run code.", "parameters": {"type": "OBJECT", "properties": {"code": {"type": "STRING"}, "filename": {"type": "STRING"}}, "required": ["filename"]}},
@@ -680,7 +695,7 @@ class RealtimeAgent:
                 category_filter = (args.get("category") or "").strip().lower()
                 result = {"actions": [], "query": query, "category": category_filter or None}
                 action_mgr = _get_action_manager_instance()
-                if action_mgr and query:
+                if action_mgr:
                     try:
                         hits = await asyncio.to_thread(action_mgr.search_actions, query)
                         for item in hits:
@@ -695,14 +710,46 @@ class RealtimeAgent:
                                 "category": (item.get("keywords") or ["general"])[0] if item.get("keywords") else "general",
                                 "description": item.get("message") or ", ".join(item.get("keywords") or []),
                             })
+                            
+                            # If we found an exact match or it's the only result, cache the code for execution
+                            if len(hits) == 1 or item.get("name").lower() == query.lower():
+                                code_content = item.get("code", "")
+                                if code_content:
+                                    last_code = code_content
+                                    code_status = True
+                                    print(f"[searchRobotActions] Cached code for '{item.get('name')}' for execution.")
+                                    
                     except Exception as e:
                         print(f"[DEBUG] searchRobotActions error: {e}")
                         result["message"] = str(e)
-                elif not query:
-                    result["message"] = "No search query provided."
-                else:
+                elif not action_mgr:
                     result["message"] = "Robot actions database not configured (GITHUB_TOKEN, GITHUB_REPO)."
                 function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
+            elif name == "deleteRobotAction":
+                action_name = (args.get("name") or "").strip()
+                result = {"deleted": False, "name": action_name, "message": ""}
+                
+                if not action_name:
+                    result["message"] = "No action name provided."
+                    function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
+                else:
+                    action_mgr = _get_action_manager_instance()
+                    if not action_mgr:
+                        result["message"] = "Robot actions database not configured (GITHUB_TOKEN, GITHUB_REPO)."
+                        function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
+                    else:
+                        try:
+                            # ActionManager.delete_action(name) -> bool
+                            success = await asyncio.to_thread(action_mgr.delete_action, action_name)
+                            if success:
+                                result["deleted"] = True
+                                result["message"] = f"Action '{action_name}' deleted successfully."
+                            else:
+                                result["message"] = f"Failed to delete action '{action_name}' (it might not exist)."
+                        except Exception as e:
+                            print(f"[deleteRobotAction] Error: {e}")
+                            result["message"] = str(e)
+                        function_responses.append(types.FunctionResponse(id=call_id, name=name, response={"result": result}))
             elif name == "writeCode":
                 coding_prompt = args.get("coding_prompt") or args.get("prompt", "")
                 language = args.get("language", "python")
