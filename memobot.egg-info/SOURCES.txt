@@ -55,4 +55,5 @@ tests/delete_nodes.py
 tests/test_api.py
 tests/test_audio_denoise.py
 tests/test_memobot_service_build_and_retrieve.py
+tests/test_microphone_input.py
 tests/test_sdk.py

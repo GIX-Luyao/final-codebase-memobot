@@ -1,0 +1,190 @@
+{
+    "living_room_06": {
+        "video_path": "data/videos/robot/living_room_06.mp4",
+        "mem_path": "data/memory_graphs/robot/living_room_06.pkl",
+        "qa_list": [
+            {
+                "question": "What are the drinks for the three people?",
+                "answer": "Coffee.",
+                "question_id": "living_room_06_Q01",
+                "reasoning": "Lily笑着说大家都没什么精神，喝点儿提神的，由此可见是喝咖啡",
+                "timestamp": "00:43",
+                "type": [
+                    "Cross-Modal Reasoning"
+                ],
+                "before_clip": 0
+            },
+            {
+                "question": "What is Lily's job?",
+                "answer": "Marketing staff.",
+                "question_id": "living_room_06_Q02",
+                "reasoning": "Lily说她今天需要去参加一个市场推广的活动，要去公司准备。表明她可能是公司的市场营销部门的职员",
+                "timestamp": "16:10",
+                "type": [
+                    "Person Understanding",
+                    "Cross-Modal Reasoning"
+                ],
+                "before_clip": 31
+            },
+            {
+                "question": "Is Lily tired of life lately?",
+                "answer": "Yes.",
+                "question_id": "living_room_06_Q03",
+                "reasoning": "Lily说她今天需要去参加一个市场推广的活动，要去公司准备。并且需要瑜伽来放松身体",
+                "timestamp": "16:10",
+                "type": [
+                    "Person Understanding"
+                ],
+                "before_clip": 31
+            },
+            {
+                "question": "What fruits does Lily like to eat?",
+                "answer": "Mango.",
+                "question_id": "living_room_06_Q04",
+                "reasoning": "Lily拿起芒果开心地吃了起来，问言好奇地问Jack为什么。",
+                "timestamp": "16:10",
+                "type": [
+                    "Person Understanding",
+                    "Cross-Modal Reasoning"
+                ],
+                "before_clip": 31
+            },
+            {
+                "question": "Is Sophie tired of life lately?",
+                "answer": "Yes.",
+                "question_id": "living_room_06_Q05",
+                "reasoning": "Sophie则表示她今天压力很大，因为要给客户交付一个自己独立完成的项目设计。因此她很累。",
+                "timestamp": "16:10",
+                "type": [
+                    "Person Understanding"
+                ],
+                "before_clip": 31
+            },
+            {
+                "question": "Why does Lily like doing yoga?",
+                "answer": "Yoga gets her relaxed.",
+                "question_id": "living_room_06_Q06",
+                "reasoning": "Lily认为瑜伽可以让她身体放松缓解压力。",
+                "timestamp": "16:10",
+                "type": [
+                    "Person Understanding"
+                ],
+                "before_clip": 31
+            },
+            {
+                "question": "Is Jack allergic to mango?",
+                "answer": "Yes.",
+                "question_id": "living_room_06_Q07",
+                "reasoning": "Sophie说之前Jack出去聚会吃了次芒果，在医院的过敏部门呆了两天。",
+                "timestamp": "16:10",
+                "type": [
+                    "Person Understanding"
+                ],
+                "before_clip": 31
+            },
+            {
+                "question": "What kind of fruit does Jack like to eat?",
+                "answer": "Apple.",
+                "question_id": "living_room_06_Q08",
+                "reasoning": "Jack请机器人将他的果盘的芒果换成其他水果，机器人回复家里还有橘子和石榴，Jack选apple。因此Jack更喜欢apple",
+                "timestamp": "16:10",
+                "type": [
+                    "Person Understanding",
+                    "Multi-Detail Reasoning"
+                ],
+                "before_clip": 31
+            },
+            {
+                "question": "Where is the yoga mat located?",
+                "answer": "Inside the storage room",
+                "question_id": "living_room_06_Q09",
+                "reasoning": "三人开始吃早饭后Lily舒展了身体，请机器人帮助收拾瑜伽垫到储物间，机器人照做并回到客厅。因此瑜伽垫在储物间里，可以从储物间再拿一次",
+                "timestamp": "13:13",
+                "type": [
+                    "General Knowledge Extraction"
+                ],
+                "before_clip": 25
+            },
+            {
+                "question": "What did the two ladies forget to pick up on their way out the door?",
+                "answer": "Umbrellas.",
+                "question_id": "living_room_06_Q10",
+                "reasoning": "Jack发现今天中午到下午会下雨，提醒Sophie和Lily带伞。但是两位女士忘记带了，Jack请机器人帮忙去拿雨伞",
+                "timestamp": "14:54",
+                "type": [
+                    "Person Understanding",
+                    "Cross-Modal Reasoning"
+                ],
+                "before_clip": 28
+            },
+            {
+                "question": "which table is the laptop on?",
+                "answer": "On the little table in front of the couch.",
+                "question_id": "living_room_06_Q11",
+                "reasoning": "Jack在沙发上用完电脑后，将笔记本电脑放在电视机前的小桌子上。",
+                "timestamp": "15:26",
+                "type": [
+                    "General Knowledge Extraction"
+                ],
+                "before_clip": 29
+            },
+            {
+                "question": "What is Jack getting ready to do?",
+                "answer": "Getting to work (meeting with clients).",
+                "question_id": "living_room_06_Q12",
+                "reasoning": "谈起今天的安排，Jack说自己只需要在家里和客户线上开会就行了，因此坐在电脑桌前，关掉电视就是要开会了",
+                "timestamp": "15:26",
+                "type": [
+                    "Person Understanding",
+                    "Cross-Modal Reasoning"
+                ],
+                "before_clip": 29
+            },
+            {
+                "question": "Will Sophie want to try yoga?",
+                "answer": "Yes.",
+                "question_id": "living_room_06_Q13",
+                "reasoning": "Sophie好奇地询问Lily做瑜伽的好处，她说她对瑜伽也很有兴趣。因此在Lily的邀请下，她应该会尝试瑜伽",
+                "timestamp": "16:10",
+                "type": [
+                    "Person Understanding"
+                ],
+                "before_clip": 31
+            },
+            {
+                "question": "What time has Jack's meeting been put off to?",
+                "answer": "10:10am.",
+                "question_id": "living_room_06_Q14",
+                "reasoning": "Lily说Jack要在早上9:10开会，Jack表明开会推迟了一个小时",
+                "timestamp": "16:10",
+                "type": [
+                    "Multi-Detail Reasoning"
+                ],
+                "before_clip": 31
+            },
+            {
+                "question": "Why is Jack is not energetic in the morning?",
+                "answer": "Stayed up late.",
+                "question_id": "living_room_06_Q15",
+                "reasoning": "Lily从瑜伽垫上站起身，说着Jack昨晚是肯定又熬夜了。",
+                "timestamp": "16:10",
+                "type": [
+                    "Person Understanding",
+                    "Cross-Modal Reasoning"
+                ],
+                "before_clip": 31
+            },
+            {
+                "question": "Does Jack hate chocolate sauce?",
+                "answer": "No.",
+                "question_id": "living_room_06_Q16",
+                "reasoning": "Lily和Sophie想加一点巧克力酱在面包上，而Jack则表示他连续吃了好久的巧克力酱，但这次就不要了。因此并不是讨厌巧克力酱，而是吃太多了腻了。",
+                "timestamp": "16:10",
+                "type": [
+                    "Person Understanding"
+                ],
+                "before_clip": 31
+            }
+        ]
+    }
+}

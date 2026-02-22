@@ -1772,6 +1772,7 @@ dependencies = [
     { name = "posthog" },
     { name = "prometheus-client" },
     { name = "psycopg2-binary" },
+    { name = "pvporcupine" },
     { name = "pyannote-audio" },
     { name = "pyarrow" },
     { name = "pyaudio" },
@@ -1836,6 +1837,7 @@ requires-dist = [
     { name = "posthog", specifier = "==7.7.0" },
     { name = "prometheus-client", specifier = "==0.19.0" },
     { name = "psycopg2-binary", specifier = "==2.9.9" },
+    { name = "pvporcupine", specifier = ">=4.0.2" },
     { name = "pyannote-audio", specifier = "==3.3.2" },
     { name = "pyarrow", specifier = "==17.0.0" },
     { name = "pyaudio", specifier = ">=0.2.13" },
@@ -2677,6 +2679,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/56/a2/7851c68fe8768f3c9c246198b6356ee3e4a8a7f6820cc798443faada3400/psycopg2_binary-2.9.9-cp312-cp312-musllinux_1_1_x86_64.whl", hash = "sha256:57fede879f08d23c85140a360c6a77709113efd1c993923c59fde17aa27599fe", size = 2456257, upload-time = "2023-10-03T12:47:23.004Z" },
     { url = "https://files.pythonhosted.org/packages/6f/ee/3ba07c6dc7c3294e717e94720da1597aedc82a10b1b180203ce183d4631a/psycopg2_binary-2.9.9-cp312-cp312-win32.whl", hash = "sha256:64cf30263844fa208851ebb13b0732ce674d8ec6a0c86a4e160495d299ba3c93", size = 1024709, upload-time = "2023-10-28T09:37:24.991Z" },
     { url = "https://files.pythonhosted.org/packages/7b/08/9c66c269b0d417a0af9fb969535f0371b8c538633535a7a6a5ca3f9231e2/psycopg2_binary-2.9.9-cp312-cp312-win_amd64.whl", hash = "sha256:81ff62668af011f9a48787564ab7eded4e9fb17a4a6a74af5ffa6a457400d2ab", size = 1163864, upload-time = "2023-10-28T09:37:28.155Z" },
+]
+
+[[package]]
+name = "pvporcupine"
+version = "4.0.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ec/41/e3f9f931b4dcf2288ce132015e62372a0395e7ae70789d5b7335bc893f21/pvporcupine-4.0.2.tar.gz", hash = "sha256:922e64bba176f7a8536c660ee5933a8de80ad9116c4d886d5db85d054a8ac3d2", size = 3642087, upload-time = "2026-02-13T06:41:59.526Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ea/88/72d5f210e6b2da2cc82bb7691883b03d9015cb556bca9f02138a127a97f5/pvporcupine-4.0.2-py3-none-any.whl", hash = "sha256:6bf5863469a45789e8150dd94779ba6051e8d3d860b486d72497cc6ecc7bafab", size = 3658714, upload-time = "2026-02-13T06:41:56.746Z" },
 ]
 
 [[package]]
