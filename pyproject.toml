@@ -65,6 +65,7 @@ dependencies = [
     "typing-extensions==4.15.0",
     "uvicorn[standard]==0.24.0",
     "websockets>=12,<17",
+    "pvporcupine>=4.0.2",
 ]
 
 [tool.uv.sources]

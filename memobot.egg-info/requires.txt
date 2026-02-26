@@ -57,6 +57,7 @@ tqdm<5,>=4.67.1
 typing-extensions==4.15.0
 uvicorn[standard]==0.24.0
 websockets<17,>=12
+pvporcupine>=4.0.2
 
 [:sys_platform == "darwin"]
 tensorflow-metal>=1.2.0

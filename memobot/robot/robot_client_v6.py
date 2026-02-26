@@ -435,25 +435,11 @@ def main():
                             # Normalize angle to [-pi, pi] to take shortest turn
                             target_azimuth = (target_azimuth + np.pi) % (2 * np.pi) - np.pi
                             print "Turning to face speaker (Body Azimuth: %.2f rad)..." % target_azimuth
-                            motionProxy.moveTo(0.0, 0.0, target_azimuth)
+                            # motionProxy.moveTo(0.0, 0.0, target_azimuth)
                             
                     except Exception as e:
                         print "Sound localization failed, skipping turn: ", e
                         
-                    # # 3. Ready for interaction
-                    # postureProxy.goToPosture("StandInit", 0.5)
-
-                    # # Re-enable BasicAwareness to ensure head tracking during interaction
-                    # try:
-                    #     awareness = ALProxy("ALBasicAwareness", args.robot_ip, 9559)
-                    #     awareness.setStimulusDetectionEnabled("Sound", True)
-                    #     awareness.setStimulusDetectionEnabled("People", True)
-                    #     awareness.setParameter("LookStimulusSpeed", 0.7)
-                    #     if not awareness.isAwarenessRunning():
-                    #         awareness.startAwareness()
-                    #     print "[BasicAwareness] Resumed for interaction."
-                    # except Exception as e:
-                    #     print "Warning resuming BasicAwareness: ", e
 
                     print ">> ROBOT READY. (Interaction Active) <<"
                     

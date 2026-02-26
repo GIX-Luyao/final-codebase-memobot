@@ -66,6 +66,7 @@ Requires-Dist: tqdm<5,>=4.67.1
 Requires-Dist: typing-extensions==4.15.0
 Requires-Dist: uvicorn[standard]==0.24.0
 Requires-Dist: websockets<17,>=12
+Requires-Dist: pvporcupine>=4.0.2
 Dynamic: author
 Dynamic: home-page
 Dynamic: requires-python
