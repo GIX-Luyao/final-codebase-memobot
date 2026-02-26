@@ -416,6 +416,9 @@ _last_recognition_request_lock = threading.Lock()
 _user_audio_hold_until = 0.0
 _user_audio_buffer = bytearray()
 _user_audio_buffer_lock = threading.Lock()
+# Wake word: ignore repeated "jarvis" until session ends (goodbye); prevents multiple run() coroutines
+_wake_word_triggered = False
+_wake_word_triggered_lock = threading.Lock()
 
 def _int16_to_float32(audio_int16):
     """Convert int16 audio to float32 for Silero VAD (-1..1)."""
@@ -551,7 +554,7 @@ def _robot_audio_socket_keeper(sock):
 
 def patched_receive_audio_from_robot():
     """Uses the system microphone (external mic / headphone jack) for all incoming audio. Robot audio port is still opened so the client can connect (data is discarded). Porcupine (wake word) gets raw mic audio. When session is connected, applies bandpass + spectral denoise + gain and feeds recorder, VAD, TalkNet, API."""
-    global _last_recognition_request_time, _user_audio_hold_until, _active_code_conn
+    global _last_recognition_request_time, _user_audio_hold_until, _active_code_conn, _wake_word_triggered
 
     if not SOUNDDEVICE_AVAILABLE or sd is None:
         print("[Audio RX] ERROR: sounddevice is required for system mic. Install with: pip install sounddevice")
@@ -728,6 +731,11 @@ def patched_receive_audio_from_robot():
                         try:
                             keyword_index = porcupine.process(pcm)
                             if keyword_index >= 0:
+                                # Ignore repeated wake word until session has ended (goodbye)
+                                with _wake_word_triggered_lock:
+                                    if _wake_word_triggered:
+                                        continue  # Session already started; ignore until goodbye
+                                    _wake_word_triggered = True
                                 kw = PORCUPINE_KEYWORDS[keyword_index] if keyword_index < len(PORCUPINE_KEYWORDS) else "?"
                                 print(f"[Wake Word] 🌟 Detected '{kw}'. Starting Gemini Live...")
                                 
@@ -747,6 +755,8 @@ def patched_receive_audio_from_robot():
                                         lambda: asyncio.create_task(original_server.agent_instance.run())
                                     )
                                 else:
+                                    with _wake_word_triggered_lock:
+                                        _wake_word_triggered = False  # Allow retry if agent wasn't ready
                                     print("[Wake Word] ⚠ Gemini Live not ready. Run with --realtime and set GOOGLE_API_KEY.")
                         except Exception as e:
                             print(f"[Wake Word] process error: {e}")
@@ -1008,7 +1018,7 @@ async def main():
             _current_speaker = {"person_id": person.get("person_id"), "name": person.get("name")}
 
     # Main Loop
-    global _last_speaker_sent_to_api, _latest_frame
+    global _last_speaker_sent_to_api, _latest_frame, _wake_word_triggered
     rec_started = False
     session_was_connected = False
     try:
@@ -1027,11 +1037,13 @@ async def main():
                 rec_started = True
                 session_was_connected = True
 
-            # When connection drops: finalize current clip (any length) and run ingest, then stop recording
+            # When connection drops (goodbye): finalize clip, stop recording, allow wake word again
             if rec_started and session_was_connected and not session_connected:
                 recorder.stop_recording_and_finalize()
                 rec_started = False
                 session_was_connected = False
+                with _wake_word_triggered_lock:
+                    _wake_word_triggered = False  # Say "Jarvis" again to start a new session
 
             recorder.check_and_save()
 
