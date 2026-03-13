@@ -1,105 +1,111 @@
 # MemoBot - Memory Layer for Robots
 
-Semantic memory storage and retrieval for humanoid robots.
-
-## How It Works
-
-```
-┌────────┐                    ┌─────────────────┐                    ┌─────────────────┐
-│ Robot  │ ──sendSegment()──▶ │  MemoBot API    │ ──store()───────▶  │ MemoBot Storage │
-│        │ (5-sec MP4 chunk)  │                 │ (embedding,        │ (PostgreSQL +   │
-│        │                    │                 │  metadata)         │  Twelve Labs)   │
-└────────┘                    └─────────────────┘                    └─────────────────┘
-    │                               │                                       │
-    │ "Where did I put my keys?"    │                                       │
-    │─────────────────────────────▶ │ ──search()─────────────────────────▶  │
-    │                               │                                       │
-    │                               │ ◀──memoryContext({clips,events})────  │
-    │ ◀──────────────────────────── │                                       │
-    │ "You put them on the desk     │                                       │
-    │  at 3:42 PM"                  │                                       │
-```
-
-## Quick Start
-
-```bash
-docker-compose up -d
-```
-
-## SDK Usage
-
-```python
-from sdk import MemoBotClient
-
-client = MemoBotClient("http://localhost:8000", "your-api-key")
-
-# === Store memories ===
-client.log_speech(robot_id="robot-1", text="I put my keys on the desk", speaker="user")
-
-# === Retrieve memories ===
-context = client.retrieve_memory(
-    robot_id="robot-1",
-    query="Where did I put my keys?"
-)
-
-print(context["context"]["clips"])    # Video clips matching query
-print(context["context"]["events"])   # Text events matching query  
-print(context["context"]["objects"])  # Detected objects
-
-# === Get LLM answer ===
-answer = client.ask(robot_id="robot-1", question="Where are my keys?")
-print(answer["answer"])  # "You put your keys on the desk."
-```
-
-## Stream Video Segments
-
-Robots must send **complete video segments** (MP4/WebM), not raw frames.
-Use ffmpeg on the robot to create segments:
-
-```bash
-ffmpeg -i /dev/video0 -c:v libx264 -f segment -segment_time 5 chunk_%03d.mp4
-```
-
-```python
-import asyncio
-import glob
-
-async def stream_video_segments():
-    stream = client.create_stream_client("robot-1")
-    await stream.connect(user_id="john")
-    
-    for chunk_path in sorted(glob.glob("chunk_*.mp4")):
-        with open(chunk_path, "rb") as f:
-            memory_id = await stream.send_segment(f.read())
-            print(f"Stored: {memory_id}")
-
-asyncio.run(stream_video_segments())
-```
-
-## API Endpoints
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/v1/ws/stream/{robot_id}` | WS | Stream video/audio/actions |
-| `/v1/memory/retrieve` | POST | Get clips, events, objects for query |
-| `/v1/memory/answer` | POST | Get LLM-generated answer |
-| `/v1/events` | POST | Store text event |
-| `/v1/memory/profile` | GET | Get user/location profile |
-
-## Configuration
-
-```bash
-# .env
-DATABASE_URL=postgresql://user:pass@localhost:5432/memobot
-REDIS_URL=redis://localhost:6379/0
-Knowledge_Graph=bolt://localhost:7687
-OPENAI_API_KEY=sk-...           # For text embeddings + LLM
-TWELVE_LABS_API_KEY=tlk_...     # For video embeddings
-```
+Semantic memory storage and retrieval for humanoid robots. MemoBot enables robots to continuously record their environment and intelligently recall information. It uses a client-server architecture to stream audio and video, providing real-time conversational interactions powered by AI models like Gemini Live.
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed design.
+The system is split into two primary components:
 
-If import errors:
-uv pip install -e .
+```text
+┌─────────────────┐                    ┌─────────────────┐
+│  Robot Client   │ ──(Raw TCP)──────▶ │  Mac/Linux      │
+│  (Microphone,   │ ◀─(Raw TCP)─────── │  Master Server  │
+│   Camera,       │                    │  (Audio/Video   │
+│   Speaker)      │                    │   Processing,   │
+└─────────────────┘                    │   Gemini Live)  │
+                                       └─────────────────┘
+```
+
+1. **Server (`mac_master_v10.py`)**: Runs on a robust host machine (Mac/Linux). It handles heavy processing like Hotword detection (Picovoice), Active Speaker Detection (TalkNet), Video Processing, and real-time audio interaction with the Gemini Live API.
+2. **Client (`robot_client_v6.py` or `mock_audio_client_v2.py`)**: A lightweight script running directly on the physical robot (e.g., NAO) or locally as a mock client. It records raw camera/mic data, sends it over TCP, and plays back the audio responses.
+
+## Environment Setup
+
+We use [`uv`](https://github.com/astral-sh/uv) for fast and reliable Python environment management.
+
+### 1. Install `uv`
+
+If you don't already have `uv` installed, run:
+
+```bash
+# On Mac/Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### 2. Install Dependencies
+
+Clone the repository and set up the virtual environment:
+
+```bash
+git clone https://github.com/your-org/memobot.git
+cd memobot
+
+# Sync dependencies and create a managed virtual environment
+uv sync
+
+# Activate the virtual environment
+source .venv/bin/activate
+```
+
+*(Note: On the physical robot, `uv` may also be used to sync dependencies, or you can rely on the minimal client scripts which only require standard libraries or lightweight dependencies.)*
+
+## Configuration
+
+Copy the environment template and set up your API keys. Create a `.env` file in the root directory:
+
+```bash
+# .env
+PICOVOICE_ACCESS_KEY=your_picovoice_key # Required for wake word detection (e.g., 'jarvis')
+GOOGLE_API_KEY=your_google_api_key      # Required for Gemini Live integration
+OPENAI_API_KEY=sk-...                   # For embeddings/text fallback
+TWELVE_LABS_API_KEY=tlk_...             # For video ingestion (if enabled)
+```
+
+## Running the System
+
+Ensure you have activated your virtual environment before running the server or mock client on your Mac/Linux host.
+
+### 1. Start the Server (Mac / Linux)
+
+The master server handles all intelligence and routes audio back to the client.
+
+```bash
+# Start the server with real-time Gemini Live interaction
+python memobot/robot/mac_master_v10.py --realtime
+
+# Start the server with both real-time interaction AND memory ingestion
+python memobot/robot/mac_master_v10.py --realtime --ingest
+```
+
+### 2. Start the Client
+
+#### Option A: Running on a Physical Robot
+
+Copy the project files to the robot. The client script streams its camera and microphone directly to the master server.
+
+```bash
+# On the robot (e.g. NAO)
+python memobot/robot/robot_client_v6.py --mac-ip <YOUR_MAC_SERVER_IP>
+```
+
+#### Option B: Running a Mock Client (Mac / Linux)
+
+If you don't have a robot, you can use the mock client, which will use your computer's built-in webcam and microphone.
+
+```bash
+# In a new terminal on your Mac/Linux machine
+source .venv/bin/activate
+
+# Run the mock client pointing to your Mac Server IP (e.g., localhost)
+python memobot/robot/mock_audio_client_v2.py --host 127.0.0.1
+```
+
+## Troubleshooting
+
+- **Missing Modules / Import Errors:** Make sure you're running the scripts from the project root directory and that the `uv` virtual environment is activated (`source .venv/bin/activate`).
+- **Cannot Connect / Connection Refused:** Ensure that the host server IP is correctly specified when starting the client and that ports `50005`, `50006`, `50007`, `50009`, and `50010` are open in your server firewall.
+- **No Audio Output:** The mock client might need specific device IDs. Run `python memobot/robot/mock_audio_client_v2.py --list-output-devices` to find your speaker index, then pass it with `--output-device <index>`.
+
+## Legacy Backend Features
+
+*(Note: Earlier versions relied on a Docker Compose backend. You can still refer to `ARCHITECTURE.md` and `USER_MANUAL.md` for historical design docs, but the `mac_master_v10.py` flow is the current standard for low-latency realtime interaction.)*
